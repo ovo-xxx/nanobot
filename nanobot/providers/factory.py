@@ -153,6 +153,7 @@ def _make_provider_core(
         )
 
     provider.generation = preset.to_generation_settings()
+    provider.credential_id = setup.credential_id
     return provider
 
 
@@ -237,6 +238,22 @@ def build_unconfigured_provider_snapshot(config: Config, setup_error: str) -> Pr
     )
 
 
+def _spent_credential(config: Config, preset: ModelPresetConfig) -> tuple[object, str]:
+    """The key this preset's route spends, and which credential it came from.
+
+    The signature decides whether a built client is reused, so it has to follow the
+    credential choice. A preset naming an unusable credential keeps the provider's own
+    key here instead of raising: creating the provider is what reports that error.
+    """
+    provider = config.get_provider(preset.model, preset=preset)
+    try:
+        route = resolve_provider_route(config, preset=preset)
+    except ValueError:
+        return (provider.api_key if provider else None), ""
+    chosen = route.provider_config
+    return (chosen.api_key if chosen else None), route.credential_id
+
+
 def _preset_provider_signature(
     config: Config, preset: ModelPresetConfig,
 ) -> tuple[object, ...]:
@@ -244,11 +261,13 @@ def _preset_provider_signature(
         config.get_provider(preset.model, preset=preset), preset,
     )
     provider_name = config.get_provider_name(preset.model, preset=preset)
+    api_key, credential_id = _spent_credential(config, preset)
     return (
         preset.model,
         preset.provider,
         provider_name,
-        config.get_api_key(preset.model, preset=preset),
+        api_key,
+        credential_id,
         config.get_api_base(preset.model, preset=preset),
         _provider_extra_headers(find_by_name(provider_name) if provider_name else None, provider_config),
         provider_config.extra_body if provider_config else None,
