@@ -466,6 +466,9 @@ class LLMProvider(ABC):
         self.api_key = api_key
         self.api_base = api_base
         self.provider_name = provider_name
+        # Which of the provider's credentials this client spends, set by the factory
+        # from the resolved route. Empty means the call cannot be attributed.
+        self.credential_id: str = ""
         self.generation: GenerationSettings = GenerationSettings()
         self._llm_call_observer: LLMCallObserver | None = None
         self._usage_estimation_slots = asyncio.Semaphore(2)
@@ -605,6 +608,7 @@ class LLMProvider(ABC):
                 usage=usage,
                 error_status_code=response.error_status_code,
                 error_kind=response.error_kind,
+                credential=self.credential_id,
             ))
         except Exception:
             logger.exception("LLM call observer failed for {}", self.provider_name)

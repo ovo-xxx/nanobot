@@ -27,6 +27,7 @@ def _call(
     usage: LLMUsage | None = None,
     finish_reason: str = "stop",
     error_kind: str | None = None,
+    credential: str = "",
 ) -> LLMCallRecord:
     return LLMCallRecord(
         started_at_ms=_timestamp(started_at),
@@ -39,6 +40,7 @@ def _call(
         usage=usage,
         error_status_code=429 if finish_reason == "error" else None,
         error_kind=error_kind or ("rate_limit" if finish_reason == "error" else None),
+        credential=credential,
     )
 
 
@@ -71,6 +73,68 @@ def test_store_keeps_only_content_free_call_metadata(tmp_path: Path) -> None:
         mode = connection.execute("PRAGMA journal_mode").fetchone()[0]
     assert version == SCHEMA_VERSION
     assert str(mode).lower() == "wal"
+
+
+def test_store_records_which_credential_the_call_spent(tmp_path: Path) -> None:
+    store = LLMUsageStore(tmp_path / "llm_usage.sqlite3")
+    store.record_many(
+        [
+            _call("2026-06-03T00:00:00+00:00", credential="work"),
+            _call("2026-06-03T00:01:00+00:00"),
+        ]
+    )
+
+    assert [row["credential"] for row in store.recent_calls(limit=2)] == ["", "work"]
+
+
+# The table exactly as schema v1 wrote it, so the upgrade path is the one a real
+# install takes.
+_V1_TABLE = """
+    CREATE TABLE llm_calls (
+        id INTEGER PRIMARY KEY,
+        started_at_ms INTEGER NOT NULL,
+        duration_ms INTEGER NOT NULL,
+        provider TEXT NOT NULL,
+        model TEXT NOT NULL,
+        source TEXT NOT NULL,
+        stream INTEGER NOT NULL,
+        finish_reason TEXT NOT NULL,
+        input_tokens INTEGER,
+        output_tokens INTEGER,
+        total_tokens INTEGER,
+        cache_read_tokens INTEGER,
+        cache_write_tokens INTEGER,
+        reported_tokens INTEGER,
+        estimated_tokens INTEGER,
+        generation_ms INTEGER,
+        measured_output_tokens INTEGER,
+        ttft_ms INTEGER,
+        timed_requests INTEGER,
+        error_status_code INTEGER,
+        error_kind TEXT
+    )
+"""
+
+
+def test_an_existing_database_gains_the_credential_column(tmp_path: Path) -> None:
+    path = tmp_path / "llm_usage.sqlite3"
+    with sqlite3.connect(path) as connection:
+        connection.executescript(_V1_TABLE)
+        connection.execute(
+            "INSERT INTO llm_calls (started_at_ms, duration_ms, provider, model, source,"
+            " stream, finish_reason) VALUES (?, 250, 'legacy', 'gpt-5', 'user', 1, 'stop')",
+            (_timestamp("2026-06-01T00:00:00+00:00"),),
+        )
+        connection.execute("PRAGMA user_version = 1")
+
+    store = LLMUsageStore(path)
+    store.record(_call("2026-06-03T00:00:00+00:00", credential="work"))
+
+    rows = store.recent_calls(limit=2)
+    assert [row["credential"] for row in rows] == ["work", ""]
+    assert rows[1]["provider"] == "legacy"
+    with sqlite3.connect(path) as connection:
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
 
 
 def test_usage_payload_aggregates_cache_coverage_sources_and_failures(tmp_path: Path) -> None:

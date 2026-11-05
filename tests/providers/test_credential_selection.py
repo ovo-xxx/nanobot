@@ -3,13 +3,17 @@
 import pytest
 
 from nanobot.config.schema import Config, ModelPresetConfig
+from nanobot.providers.factory import make_provider, provider_signature
 from nanobot.providers.registry import PROVIDERS
 from nanobot.providers.routing import resolve_provider_route
 
 
+def _config(providers: dict) -> Config:
+    return Config.model_validate({"providers": providers})
+
+
 def _route(preset: ModelPresetConfig, providers: dict) -> object:
-    config = Config.model_validate({"providers": providers})
-    return resolve_provider_route(config, preset=preset)
+    return resolve_provider_route(_config(providers), preset=preset)
 
 
 def _providers(*, base: str = "https://deepseek.test/v1") -> dict:
@@ -33,6 +37,7 @@ def test_the_preset_credential_becomes_the_key_the_provider_uses() -> None:
     route = _route(_preset("work"), _providers())
 
     assert route.provider_config.api_key == "sk-work"
+    assert route.credential_id == "work"
     # nothing else about the connection moved with the key
     assert route.provider_config.api_base == "https://deepseek.test/v1"
     assert route.provider_name == "deepseek"
@@ -42,6 +47,7 @@ def test_the_default_key_is_still_reachable_by_name() -> None:
     route = _route(_preset("default"), _providers())
 
     assert route.provider_config.api_key == "sk-personal"
+    assert route.credential_id == "default"
 
 
 def test_choosing_between_several_keys_is_not_left_to_order() -> None:
@@ -55,13 +61,16 @@ def test_a_single_usable_key_needs_no_naming() -> None:
     route = _route(_preset(""), providers)
 
     assert route.provider_config.api_key == "sk-work"
+    assert route.credential_id == "work"
 
 
 def test_a_plain_provider_is_untouched() -> None:
     providers = {"deepseek": {"apiBase": "https://deepseek.test/v1", "apiKey": "sk-only"}}
 
     for preset in (_preset(""), _preset("default")):
-        assert _route(preset, providers).provider_config.api_key == "sk-only"
+        route = _route(preset, providers)
+        assert route.provider_config.api_key == "sk-only"
+        assert route.credential_id == "default"
 
 
 def test_an_unknown_credential_lists_the_ones_that_exist() -> None:
@@ -91,3 +100,24 @@ def test_oauth_providers_cannot_hold_a_credential_list() -> None:
             ModelPresetConfig(model="any-model", provider=oauth.name, credential="second"),
             providers,
         )
+
+
+def test_the_built_client_carries_the_credential_it_spends() -> None:
+    provider = make_provider(_config(_providers()), preset=_preset("backup"))
+
+    assert provider.api_key == "sk-backup"
+    assert provider.credential_id == "backup"
+
+
+def test_a_client_built_without_a_route_has_no_credential_to_report() -> None:
+    provider = make_provider(_config({"deepseek": {"apiBase": "https://deepseek.test/v1", "apiKey": "sk-only"}}), preset=_preset(""))
+
+    assert provider.credential_id == "default"
+
+
+def test_switching_credential_does_not_reuse_the_previous_client() -> None:
+    config = _config(_providers())
+
+    assert provider_signature(config, preset=_preset("work")) != provider_signature(
+        config, preset=_preset("backup")
+    )

@@ -25,6 +25,9 @@ class ProviderRoute:
 
     ``model_api`` carries configured overrides; ``None`` preserves automatic
     model discovery and the adapter's request-time defaults.
+
+    ``credential_id`` names which of the provider's credentials the route spends,
+    so usage can be attributed without the provider layer carrying the list.
     """
 
     model: str
@@ -33,6 +36,7 @@ class ProviderRoute:
     spec: ProviderSpec | None
     backend: str
     model_api: ModelAPICapabilities | None
+    credential_id: str = ""
 
 
 def _provider_spec_for_config(
@@ -68,7 +72,7 @@ def _select_credential(
     provider_config: ProviderConfig | None,
     preset: ModelPresetConfig,
     spec: ProviderSpec | None,
-) -> ProviderConfig | None:
+) -> tuple[ProviderConfig | None, str]:
     """Point the route at the credential the preset named.
 
     Everything below - and every provider constructor in the factory - keeps reading
@@ -76,7 +80,7 @@ def _select_credential(
     threaded through the whole provider layer as a new argument.
     """
     if provider_config is None:
-        return None
+        return None, ""
     if provider_config.credentials and spec is not None and spec.is_oauth:
         raise ValueError(
             f"Provider '{provider_name}' signs in with OAuth and keeps one credential "
@@ -84,7 +88,7 @@ def _select_credential(
         )
     wanted = (preset.credential or "").strip()
     if not provider_config.credentials and wanted in ("", DEFAULT_CREDENTIAL_ID):
-        return provider_config
+        return provider_config, DEFAULT_CREDENTIAL_ID
 
     usable = [c for c in provider_config.all_credentials() if c.api_key.strip()]
     if wanted:
@@ -95,15 +99,15 @@ def _select_credential(
             raise ValueError(
                 f"Credential {wanted!r} of provider '{provider_name}' has no api_key configured."
             )
-        return provider_config.model_copy(update={"api_key": chosen.api_key})
+        return provider_config.model_copy(update={"api_key": chosen.api_key}), chosen.id
     if len(usable) > 1:
         raise ValueError(
             f"Provider '{provider_name}' has {len(usable)} credentials; the model preset "
             f"must name one of: {_credential_ids(provider_config, usable)}."
         )
     if len(usable) == 1:
-        return provider_config.model_copy(update={"api_key": usable[0].api_key})
-    return provider_config
+        return provider_config.model_copy(update={"api_key": usable[0].api_key}), usable[0].id
+    return provider_config, DEFAULT_CREDENTIAL_ID
 
 
 def _credential_ids(
@@ -174,7 +178,7 @@ def resolve_provider_route(
     if not provider_name:
         raise ValueError(f"No provider is configured for model '{model}'.")
     spec = _provider_spec_for_config(provider_name, provider_config)
-    provider_config = _select_credential(provider_name, provider_config, preset, spec)
+    provider_config, credential_id = _select_credential(provider_name, provider_config, preset, spec)
     if spec and spec.is_transcription_only:
         raise ValueError(f"Provider '{provider_name}' only supports transcription.")
     backend = spec.backend if spec else "openai_compat"
@@ -224,6 +228,7 @@ def resolve_provider_route(
         spec=spec,
         backend=backend,
         model_api=model_api,
+        credential_id=credential_id,
     )
 
 
