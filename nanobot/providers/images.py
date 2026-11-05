@@ -7,10 +7,16 @@ from collections.abc import Iterator
 from copy import deepcopy
 from dataclasses import dataclass
 from math import ceil
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from loguru import logger
-from PIL import Image, ImageOps
+
+# Pillow is only needed once a request actually carries an image batch over the
+# inline budget, and its native libs are the largest single block mapped into the
+# gateway process. Importing it here would load it for every deployment, including
+# one that never sends a picture, so it is pulled in by the two functions that use it.
+if TYPE_CHECKING:
+    from PIL import Image
 
 # A soft transport target, including base64 expansion, rather than an API size limit.
 INLINE_IMAGE_BYTE_BUDGET = 1_000_000
@@ -63,6 +69,8 @@ class _ImageCopy:
     sent_size: tuple[int, int]
 
     def encode(self, quality: int, scale: float) -> None:
+        from PIL import Image
+
         if self.format == "PNG" and scale == 1 and quality != 85:
             return
         image = self.source
@@ -96,6 +104,8 @@ async def prepare_message_images(messages: list[dict[str, Any]]) -> list[dict[st
 
 
 def _prepare_copies(body: dict[str, Any], total_bytes: int) -> dict[str, Any]:
+    from PIL import Image, ImageOps
+
     prepared = deepcopy(body)
     blocks = list(_inline_images(prepared))
     copies: list[_ImageCopy] = []
