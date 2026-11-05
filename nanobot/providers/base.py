@@ -39,6 +39,7 @@ from nanobot.utils.helpers import sanitize_surrogates_deep
 
 if TYPE_CHECKING:
     from nanobot.llm_usage.models import LLMCallRecord
+    from nanobot.pricing.config import ProviderPricing
 
 STREAM_IDLE_TIMEOUT_ENV = "NANOBOT_STREAM_IDLE_TIMEOUT_S"
 DEFAULT_STREAM_IDLE_TIMEOUT_S = 90.0
@@ -469,6 +470,9 @@ class LLMProvider(ABC):
         # Which of the provider's credentials this client spends, set by the factory
         # from the resolved route. Empty means the call cannot be attributed.
         self.credential_id: str = ""
+        # The service's rate table, set by the factory. A call is priced when it is
+        # recorded, so this is only ever the list in force right now.
+        self.pricing: ProviderPricing | None = None
         self.generation: GenerationSettings = GenerationSettings()
         self._llm_call_observer: LLMCallObserver | None = None
         self._usage_estimation_slots = asyncio.Semaphore(2)
@@ -597,6 +601,19 @@ class LLMProvider(ABC):
             from nanobot.llm_usage.context import current_llm_usage_source
             from nanobot.llm_usage.models import LLMCallRecord
 
+            amount: float | None = None
+            currency = ""
+            price_basis = ""
+            if self.pricing is not None:
+                # Imported here so a provider with no price table never loads the module.
+                from nanobot.pricing.cost import cost_for_usage
+
+                cost = cost_for_usage(
+                    self.pricing, started_at_ms=started_at_ms, model=model, usage=usage
+                )
+                if cost is not None:
+                    amount, currency, price_basis = cost.amount, cost.currency, cost.basis()
+
             observer(LLMCallRecord(
                 started_at_ms=started_at_ms,
                 duration_ms=max(0, (finished_at_ns - started_at_ns) // 1_000_000),
@@ -609,6 +626,9 @@ class LLMProvider(ABC):
                 error_status_code=response.error_status_code,
                 error_kind=response.error_kind,
                 credential=self.credential_id,
+                amount=amount,
+                currency=currency,
+                price_basis=price_basis,
             ))
         except Exception:
             logger.exception("LLM call observer failed for {}", self.provider_name)

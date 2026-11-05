@@ -17,6 +17,14 @@ SCHEMA_VERSION = 2
 MAX_DAYS_RETAINED = 400
 MAX_CALLS_RETAINED = 100_000
 
+# Columns added after the first release, in the order a stored database picks them up.
+_ADDED_COLUMNS = {
+    "credential": "TEXT NOT NULL DEFAULT ''",
+    "amount": "REAL",
+    "currency": "TEXT NOT NULL DEFAULT ''",
+    "price_basis": "TEXT NOT NULL DEFAULT ''",
+}
+
 _ERROR_KINDS = frozenset({
     "authentication",
     "cancelled",
@@ -213,7 +221,10 @@ class LLMUsageStore:
                 timed_requests INTEGER,
                 error_status_code INTEGER,
                 error_kind TEXT,
-                credential TEXT NOT NULL DEFAULT ''
+                credential TEXT NOT NULL DEFAULT '',
+                amount REAL,
+                currency TEXT NOT NULL DEFAULT '',
+                price_basis TEXT NOT NULL DEFAULT ''
             );
             CREATE INDEX IF NOT EXISTS llm_calls_started_at_idx
                 ON llm_calls(started_at_ms);
@@ -221,7 +232,7 @@ class LLMUsageStore:
                 ON llm_calls(provider, model, started_at_ms);
             """
         )
-        self._upgrade_credential(connection)
+        self._upgrade_columns(connection)
         connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
         self._connection = connection
         self._connection_pid = pid
@@ -241,11 +252,12 @@ class LLMUsageStore:
         return connection
 
     @staticmethod
-    def _upgrade_credential(connection: sqlite3.Connection) -> None:
-        """Add the credential column to a database written before it existed."""
+    def _upgrade_columns(connection: sqlite3.Connection) -> None:
+        """Add columns a database written by an earlier version does not have."""
         columns = {row["name"] for row in connection.execute("PRAGMA table_info(llm_calls)")}
-        if "credential" not in columns:
-            connection.execute("ALTER TABLE llm_calls ADD COLUMN credential TEXT NOT NULL DEFAULT ''")
+        for name, declaration in _ADDED_COLUMNS.items():
+            if name not in columns:
+                connection.execute(f"ALTER TABLE llm_calls ADD COLUMN {name} {declaration}")
 
     @staticmethod
     def _local_day(started_at_ms: object, timezone_name: object) -> str | None:
@@ -293,6 +305,9 @@ class LLMUsageStore:
             _clean_status_code(call.error_status_code),
             _clean_error_kind(call.error_kind),
             call.credential[:80],
+            call.amount if call.amount is not None else None,
+            call.currency[:8],
+            call.price_basis[:2_000],
         )
         with self._lock:
             connection = self._connect()
@@ -304,9 +319,10 @@ class LLMUsageStore:
                     cache_read_tokens, cache_write_tokens, reported_tokens,
                     estimated_tokens, generation_ms, measured_output_tokens,
                     ttft_ms, timed_requests, error_status_code, error_kind,
-                    credential
+                    credential, amount, currency, price_basis
                 ) VALUES (
-                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                    ?, ?, ?, ?
                 )
                 """,
                 values,
