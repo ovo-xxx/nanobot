@@ -18,10 +18,6 @@ from nanobot.agent.plugins import (
     discover_agent_plugins,
     set_agent_plugin_enabled,
 )
-from nanobot.agent.tools.mcp_oauth import (
-    delete_mcp_oauth_credentials,
-    mcp_oauth_has_credentials,
-)
 from nanobot.agent.tools.registry import ToolRegistry
 from nanobot.apps.protocol import app_manifest, compact_dict
 from nanobot.config.loader import load_config, resolve_config_env_vars, save_config
@@ -361,8 +357,11 @@ def _status_for(preset: McpPreset, cfg: MCPServerConfig | None) -> str:
         return "not_installed" if preset.install_supported else "coming_soon"
     if any(field.required and not _field_configured(field, cfg) for field in preset.fields):
         return "missing_credentials"
-    if cfg.auth == "oauth" and not mcp_oauth_has_credentials(preset.name, cfg.url):
-        return "authorization_required"
+    if cfg.auth == "oauth":
+        from nanobot.agent.tools.mcp_oauth import mcp_oauth_has_credentials
+
+        if not mcp_oauth_has_credentials(preset.name, cfg.url):
+            return "authorization_required"
     if cfg.command and not _command_available(cfg.command):
         return "missing_dependency"
     return "configured"
@@ -524,7 +523,12 @@ def _custom_payload(
     transport = cfg.type
     if not transport:
         transport = "stdio" if cfg.command else ("sse" if cfg.url.rstrip("/").endswith("/sse") else "streamableHttp")
-    if cfg.auth == "oauth" and not mcp_oauth_has_credentials(name, cfg.url):
+    oauth_missing = False
+    if cfg.auth == "oauth":
+        from nanobot.agent.tools.mcp_oauth import mcp_oauth_has_credentials
+
+        oauth_missing = not mcp_oauth_has_credentials(name, cfg.url)
+    if oauth_missing:
         status = "authorization_required"
     else:
         status = "missing_dependency" if cfg.command and not _command_available(cfg.command) else "configured"
@@ -1114,6 +1118,8 @@ def custom_mcp_action(
         config.tools.mcp_servers[name] = cfg
         save_config(config, config_path)
         if delete_credentials:
+            from nanobot.agent.tools.mcp_oauth import delete_mcp_oauth_credentials
+
             delete_mcp_oauth_credentials(name)
         payload = mcp_presets_payload(
             last_action=_server_action_message(action, name),
@@ -1133,8 +1139,11 @@ def custom_mcp_action(
         ]
         config.tools.mcp_servers.update(servers)
         save_config(config, config_path)
-        for name in delete_credentials:
-            delete_mcp_oauth_credentials(name)
+        if delete_credentials:
+            from nanobot.agent.tools.mcp_oauth import delete_mcp_oauth_credentials
+
+            for name in delete_credentials:
+                delete_mcp_oauth_credentials(name)
         payload = mcp_presets_payload(
             last_action={
                 "ok": True,
@@ -1248,6 +1257,8 @@ def mcp_presets_action(
                 cleanup_error = str(exc)
             del config.tools.mcp_servers[name]
             save_config(config, config_path)
+            from nanobot.agent.tools.mcp_oauth import delete_mcp_oauth_credentials
+
             delete_mcp_oauth_credentials(name)
         last_action = (
             _action_message(action, preset)
