@@ -116,7 +116,7 @@ _V1_TABLE = """
 """
 
 
-def test_an_existing_database_gains_the_credential_column(tmp_path: Path) -> None:
+def test_an_existing_database_gains_the_new_columns(tmp_path: Path) -> None:
     path = tmp_path / "llm_usage.sqlite3"
     with sqlite3.connect(path) as connection:
         connection.executescript(_V1_TABLE)
@@ -133,6 +133,8 @@ def test_an_existing_database_gains_the_credential_column(tmp_path: Path) -> Non
     rows = store.recent_calls(limit=2)
     assert [row["credential"] for row in rows] == ["work", ""]
     assert rows[1]["provider"] == "legacy"
+    # money is only known for calls recorded while a price table was configured
+    assert [row["amount"] for row in rows] == [None, None]
     with sqlite3.connect(path) as connection:
         assert connection.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
 

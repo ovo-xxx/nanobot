@@ -25,7 +25,7 @@ from nanobot.config.provider_api_migration import migrate_legacy_provider_api
 from nanobot.config.timezone import detect_system_timezone
 from nanobot.config_base import Base
 from nanobot.cron.types import CronSchedule
-from nanobot.pricing.config import ProviderPricing, check_price_blocks
+from nanobot.pricing.config import ProviderPricing
 from nanobot.providers.generation import GenerationSettings
 from nanobot.providers.model_api import ModelAPICapabilities, RequestAPI
 
@@ -302,11 +302,11 @@ class ProviderConfig(Base):
     )
     # What this service charges, and how it counts. It hangs on the service rather
     # than the model because a reseller of the same model prices it differently, or
-    # not at all. More than one block is the service's price history: each starts on a
-    # date, so a call is priced against the list that was in force when it ran.
-    pricing: list[ProviderPricing] = Field(
-        default_factory=list,
-        exclude_if=lambda value: not value,
+    # not at all. Each call is priced when it is recorded, so revising this block does
+    # not move the money that older calls already cost.
+    pricing: ProviderPricing | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
     )
 
     # Valid values mirror the keys of _THINKING_STYLE_MAP in
@@ -338,7 +338,6 @@ class ProviderConfig(Base):
             if credential.id in seen:
                 raise ValueError(f"duplicate credential id {credential.id!r}")
             seen.add(credential.id)
-        check_price_blocks(self.pricing)
         return self
 
     @property
