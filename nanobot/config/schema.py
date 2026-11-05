@@ -344,7 +344,7 @@ class ProviderConfig(Base):
         # this synthetic row is exactly the provider's own api_key.
         default = ProviderCredential.model_construct(
             id=DEFAULT_CREDENTIAL_ID,
-            name=DEFAULT_CREDENTIAL_ID,
+            name="",  # no label of its own: the id already reads "default"
             api_key=self.api_key or "",
         )
         return [default, *self.credentials]
