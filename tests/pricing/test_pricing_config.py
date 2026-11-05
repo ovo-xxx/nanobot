@@ -7,7 +7,7 @@ from datetime import date
 import pytest
 
 from nanobot.config.schema import Config
-from nanobot.pricing.config import LocalTime, PeakBand, ProviderPricing
+from nanobot.pricing.config import LocalTime, PeakBand, ProviderPricing, block_on
 
 
 def _at(year: int, month: int, day: int, hour: int, minute: int) -> LocalTime:
@@ -48,7 +48,7 @@ def test_a_provider_without_a_price_block_writes_no_block_back() -> None:
     config = Config.model_validate({"providers": {"deepseek": {"apiBase": "https://x.test/v1"}}})
 
     assert config.providers.deepseek is not None
-    assert config.providers.deepseek.pricing is None
+    assert config.providers.deepseek.pricing == []
     assert "pricing" not in config.providers.deepseek.model_dump()
 
 
@@ -154,7 +154,54 @@ def test_malformed_declarations_are_rejected_on_load() -> None:
         ({"band": {"holidays": ["National Day"]}}, "not a 2026-10-01 date"),
         ({"band": {"days": [8]}}, "peak day 8"),
         ({"asOf": "last Tuesday"}, "not a 2026-10-01 date"),
+        ({"effectiveFrom": "when it went up"}, "not a 2026-10-01 date"),
         ({"models": {"deepseek-flash": {"offPeak": {"input": 1, "output": -4}}}}, "greater than or equal"),
     ):
         with pytest.raises(ValueError, match=message):
             _deepseek_like(**payload)
+
+
+def test_a_price_history_resolves_to_the_list_in_force_on_the_day() -> None:
+    before = _deepseek_like(effectiveFrom="")
+    after = _deepseek_like(effectiveFrom="2026-11-01")
+
+    assert block_on(date(2026, 10, 31), [before, after]) is before
+    assert block_on(date(2026, 11, 1), [before, after]) is after
+    assert block_on(date(2026, 12, 25), [before, after]) is after
+    # a call older than every dated list has no price to be charged at
+    assert block_on(date(2026, 1, 1), [after]) is None
+
+
+def test_the_history_is_read_whichever_order_the_config_written_it_in() -> None:
+    before = _deepseek_like(effectiveFrom="2025-01-01")
+    after = _deepseek_like(effectiveFrom="2026-11-01")
+
+    assert block_on(date(2026, 5, 5), [after, before]) is before
+
+
+def test_a_service_may_not_have_two_lists_that_start_on_the_same_day() -> None:
+    blocks = [_deepseek_like(effectiveFrom="2026-11-01"), _deepseek_like(effectiveFrom="2026-11-01")]
+
+    with pytest.raises(ValueError, match="repeat an effective date"):
+        Config.model_validate({"providers": {"deepseek": {"apiBase": "https://x.test/v1", "pricing": blocks}}})
+
+
+def test_only_one_list_may_claim_it_always_be_so() -> None:
+    blocks = [_deepseek_like(), _deepseek_like(models={"other": {"offPeak": {"input": 1, "output": 1}}})]
+
+    with pytest.raises(ValueError, match="effectiveFrom unset"):
+        Config.model_validate({"providers": {"deepseek": {"apiBase": "https://x.test/v1", "pricing": blocks}}})
+
+
+def test_a_service_selling_quota_is_not_a_price_revision() -> None:
+    blocks = [_deepseek_like(), ProviderPricing.model_validate({"unit": "tokens", "effectiveFrom": "2026-11-01"})]
+
+    with pytest.raises(ValueError, match="same unit"):
+        Config.model_validate({"providers": {"deepseek": {"apiBase": "https://x.test/v1", "pricing": blocks}}})
+
+
+def test_the_history_keeps_one_clock_so_a_day_has_one_boundary() -> None:
+    blocks = [_deepseek_like(), _deepseek_like(utcOffsetSeconds=0, effectiveFrom="2026-11-01")]
+
+    with pytest.raises(ValueError, match="same clock"):
+        Config.model_validate({"providers": {"deepseek": {"apiBase": "https://x.test/v1", "pricing": blocks}}})

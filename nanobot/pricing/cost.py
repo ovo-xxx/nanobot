@@ -1,20 +1,21 @@
 """Turn a service's token counts into the number that service would show you.
 
 Nothing here is stored: rows keep token counts, and the money or the quota occupancy
-is recomputed from the price block every time it is read. Correcting a rate therefore
-reprices history, which is the point - the alternative is a column of amounts that
-drifts away from the price list it was derived from.
+is computed from the service's price history each time it is read. A call is priced
+against the list that was in force on its own day, so a revision adds a dated block and
+leaves the older days' totals where they were - which is the whole reason the amounts
+are not written into the table.
 """
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone, tzinfo
 from typing import Literal
 
 from nanobot.llm_usage.models import LLMCallRecord
-from nanobot.pricing.config import LocalTime, ProviderPricing
+from nanobot.pricing.config import LocalTime, ProviderPricing, block_on
 
 PER_MILLION = 1_000_000.0
 
@@ -70,6 +71,10 @@ def local_time(started_at_ms: int, utc_offset_seconds: int) -> datetime:
 def _at(started_at_ms: int, pricing: ProviderPricing) -> LocalTime:
     moment = local_time(started_at_ms, pricing.utc_offset_seconds)
     return LocalTime(day=moment.date(), minutes_of_day=moment.hour * 60 + moment.minute)
+
+
+def _day_of(started_at_ms: int, pricing: ProviderPricing) -> date:
+    return local_time(started_at_ms, pricing.utc_offset_seconds).date()
 
 
 def cost_for_call(
@@ -221,21 +226,30 @@ def window_usage(
 
 def summarize_provider(
     provider: str,
-    pricing: ProviderPricing | None,
+    blocks: Sequence[ProviderPricing],
     calls: Iterable[LLMCallRecord],
     *,
     now_ms: int,
 ) -> ProviderSummary | None:
-    """What one service's rows add up to, or nothing if it declares no price block."""
-    if pricing is None:
+    """What one service's rows add up to, or nothing if it declares no price block.
+
+    Each call is priced against the list in force on its own day, so a revision prices
+    the days after it and leaves the older days at the money they actually ran under.
+    """
+    if not blocks:
         return None
     rows = [call for call in calls if _counts_toward_quota(call)]
+    current = max(blocks, key=lambda block: block.starts_on)
     amount = 0.0
     peak_calls = 0
     unpriced_calls = 0
     amounts: dict[int, float] = {}
     for call in rows:
-        if pricing.unit != "money":
+        if current.unit != "money":
+            continue
+        pricing = block_on(_day_of(call.started_at_ms, current), blocks)
+        if pricing is None or pricing.unit != "money":
+            unpriced_calls += 1
             continue
         cost = _cost_of(call, pricing)
         if cost is None:
@@ -244,23 +258,23 @@ def summarize_provider(
         amount += cost.amount
         peak_calls += 1 if cost.peak else 0
         amounts[call.started_at_ms] = amounts.get(call.started_at_ms, 0.0) + cost.amount
-    counted = len(rows) if pricing.unit != "money" else len(rows) - unpriced_calls
+    counted = len(rows) if current.unit != "money" else len(rows) - unpriced_calls
     return ProviderSummary(
         provider=provider,
-        unit=pricing.unit,
-        currency=pricing.currency,
+        unit=current.unit,
+        currency=current.currency,
         amount=amount,
         counted_calls=counted,
         peak_calls=peak_calls,
         unpriced_calls=unpriced_calls,
-        windows=window_usage(pricing, rows, amounts, now_ms=now_ms),
+        windows=window_usage(current, rows, amounts, now_ms=now_ms),
     )
 
 
 def summarize_by_provider(
     calls: Iterable[LLMCallRecord],
     *,
-    pricing_of: Callable[[str], ProviderPricing | None],
+    pricing_of: Callable[[str], Sequence[ProviderPricing]],
     now_ms: int,
 ) -> list[ProviderSummary]:
     """Per-service summaries, one per provider that declares a price block."""
