@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 
 import pytest
 
@@ -262,15 +261,17 @@ def test_a_cycle_anchored_on_the_31st_rolls_with_the_month() -> None:
 def test_a_money_service_can_show_spend_per_window() -> None:
     off_peak = _call(_ms(2026, 11, 4, 3, 0), usage=_usage(input_tokens=91_000, cache_read=90_000))
     peak = _call(_ms(2026, 11, 4, 10, 0), usage=_usage(input_tokens=91_000, cache_read=90_000))
-    money = _pricing(
-        {
-            "unit": "money",
-            "currency": "CNY",
-            "utcOffsetSeconds": 8 * 3600,
-            "models": {"deepseek-flash": {"offPeak": {"input": 1, "cachedInput": 0.02, "output": 4}}},
-            "windows": [{"period": "day", "limit": 20}],
-        }
-    )
+    money = [
+        _pricing(
+            {
+                "unit": "money",
+                "currency": "CNY",
+                "utcOffsetSeconds": 8 * 3600,
+                "models": {"deepseek-flash": {"offPeak": {"input": 1, "cachedInput": 0.02, "output": 4}}},
+                "windows": [{"period": "day", "limit": 20}],
+            }
+        )
+    ]
 
     summary = cost.summarize_provider("deepseek", money, [off_peak, peak], now_ms=_ms(2026, 11, 4, 12, 0))
 
@@ -281,6 +282,47 @@ def test_a_money_service_can_show_spend_per_window() -> None:
     assert summary.windows[0].limit == 20
 
 
+def test_a_revision_keeps_the_older_days_at_their_own_price() -> None:
+    """The reason amounts are not written to the table: the history is the price list."""
+    history = [
+        _pricing(
+            {
+                "unit": "money",
+                "currency": "CNY",
+                "utcOffsetSeconds": 8 * 3600,
+                "models": {"deepseek-flash": {"offPeak": {"input": 1, "output": 4}}},
+            }
+        ),
+        _pricing(
+            {
+                "unit": "money",
+                "currency": "CNY",
+                "effectiveFrom": "2026-11-01",
+                "utcOffsetSeconds": 8 * 3600,
+                "models": {"deepseek-flash": {"offPeak": {"input": 2, "output": 8}}},
+            }
+        ),
+    ]
+    before = _call(_ms(2026, 10, 20, 10, 0), usage=_usage(input_tokens=1_000))
+    after = _call(_ms(2026, 11, 20, 10, 0), usage=_usage(input_tokens=1_000))
+
+    summary = cost.summarize_provider("deepseek", history, [before, after], now_ms=_ms(2026, 11, 30, 0, 0))
+
+    assert summary is not None
+    # 1000 fresh input + 500 output, at 1/4 then at the doubled 2/8
+    assert summary.amount == pytest.approx(0.001 + 0.002 + 0.002 + 0.004)
+    single = cost.cost_for_call(
+        history[0],
+        started_at_ms=before.started_at_ms,
+        model="deepseek-flash",
+        total_tokens=1_500,
+        input_tokens=1_000,
+        output_tokens=500,
+    )
+    assert single is not None
+    assert single.amount == pytest.approx(0.003)
+
+
 def test_summaries_separate_priced_calls_from_calls_no_row_covers() -> None:
     rows = [
         _call(_ms(2026, 11, 4, 10, 0)),
@@ -288,9 +330,11 @@ def test_summaries_separate_priced_calls_from_calls_no_row_covers() -> None:
         _call(_ms(2026, 11, 4, 10, 6), usage=LLMUsage.empty_request()),
         _call(_ms(2026, 11, 4, 10, 7), provider="plan", usage=_usage(input_tokens=5_000)),
     ]
-    pricing_of = {"deepseek": FLASH, "plan": PLAN}.get
+    blocks = {"deepseek": [FLASH], "plan": [PLAN]}
 
-    summaries = cost.summarize_by_provider(rows, pricing_of=pricing_of, now_ms=_ms(2026, 11, 4, 12, 0))
+    summaries = cost.summarize_by_provider(
+        rows, pricing_of=lambda name: blocks.get(name, []), now_ms=_ms(2026, 11, 4, 12, 0)
+    )
 
     assert [summary.provider for summary in summaries] == ["deepseek", "plan"]
     deepseek, plan = summaries
@@ -307,21 +351,22 @@ def test_summaries_separate_priced_calls_from_calls_no_row_covers() -> None:
 def test_a_service_without_a_price_block_is_left_out_rather_than_priced_at_zero() -> None:
     summaries = cost.summarize_by_provider(
         [_call(_ms(2026, 11, 4, 10, 0))],
-        pricing_of=lambda provider: None,
+        pricing_of=lambda provider: [],
         now_ms=_ms(2026, 11, 4, 12, 0),
     )
 
     assert summaries == []
 
 
-def test_the_block_round_trips_through_the_provider_config(tmp_path: Path) -> None:
-    config = Config.model_validate({"providers": {"deepseek": {"apiBase": "https://x.test/v1", "pricing": FLASH}}})
+def test_the_blocks_round_trip_through_the_provider_config() -> None:
+    config = Config.model_validate(
+        {"providers": {"deepseek": {"apiBase": "https://x.test/v1", "pricing": [FLASH]}}}
+    )
     provider = config.providers.deepseek
 
     assert provider is not None
-    assert provider.pricing is not None
-    assert provider.pricing.models["deepseek-flash"].off_peak.cached_input == 0.02
-    # the config file keeps the block in the camelCase the rest of the file uses
+    assert provider.pricing[0].models["deepseek-flash"].off_peak.cached_input == 0.02
+    # the config file keeps the history in the camelCase the rest of the file uses
     dumped = provider.model_dump(by_alias=True, exclude_none=True)
-    assert dumped["pricing"]["utcOffsetSeconds"] == 28800
-    assert dumped["pricing"]["models"]["deepseek-flash"]["offPeak"]["cachedInput"] == 0.02
+    assert dumped["pricing"][0]["utcOffsetSeconds"] == 28800
+    assert dumped["pricing"][0]["models"]["deepseek-flash"]["offPeak"]["cachedInput"] == 0.02
