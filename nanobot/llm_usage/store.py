@@ -13,7 +13,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from nanobot.llm_usage.models import LLMCallRecord
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 MAX_DAYS_RETAINED = 400
 MAX_CALLS_RETAINED = 100_000
 
@@ -212,7 +212,8 @@ class LLMUsageStore:
                 ttft_ms INTEGER,
                 timed_requests INTEGER,
                 error_status_code INTEGER,
-                error_kind TEXT
+                error_kind TEXT,
+                credential TEXT NOT NULL DEFAULT ''
             );
             CREATE INDEX IF NOT EXISTS llm_calls_started_at_idx
                 ON llm_calls(started_at_ms);
@@ -220,6 +221,7 @@ class LLMUsageStore:
                 ON llm_calls(provider, model, started_at_ms);
             """
         )
+        self._upgrade_credential(connection)
         connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
         self._connection = connection
         self._connection_pid = pid
@@ -237,6 +239,13 @@ class LLMUsageStore:
         connection.execute("PRAGMA temp_store = MEMORY")
         connection.create_function("llm_usage_local_day", 2, self._local_day, deterministic=True)
         return connection
+
+    @staticmethod
+    def _upgrade_credential(connection: sqlite3.Connection) -> None:
+        """Add the credential column to a database written before it existed."""
+        columns = {row["name"] for row in connection.execute("PRAGMA table_info(llm_calls)")}
+        if "credential" not in columns:
+            connection.execute("ALTER TABLE llm_calls ADD COLUMN credential TEXT NOT NULL DEFAULT ''")
 
     @staticmethod
     def _local_day(started_at_ms: object, timezone_name: object) -> str | None:
@@ -283,6 +292,7 @@ class LLMUsageStore:
             ),
             _clean_status_code(call.error_status_code),
             _clean_error_kind(call.error_kind),
+            call.credential[:80],
         )
         with self._lock:
             connection = self._connect()
@@ -293,9 +303,10 @@ class LLMUsageStore:
                     finish_reason, input_tokens, output_tokens, total_tokens,
                     cache_read_tokens, cache_write_tokens, reported_tokens,
                     estimated_tokens, generation_ms, measured_output_tokens,
-                    ttft_ms, timed_requests, error_status_code, error_kind
+                    ttft_ms, timed_requests, error_status_code, error_kind,
+                    credential
                 ) VALUES (
-                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
                 )
                 """,
                 values,

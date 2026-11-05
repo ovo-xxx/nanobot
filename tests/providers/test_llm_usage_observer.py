@@ -130,6 +130,33 @@ async def test_observer_receives_every_retry_attempt(stream: bool) -> None:
 
 
 @pytest.mark.asyncio
+async def test_observer_reports_the_credential_the_client_spends() -> None:
+    provider = _SequenceProvider(
+        iter([LLMResponse(content="ok", usage=LLMUsage.reported(input_tokens=5, output_tokens=2))])
+    )
+    provider.credential_id = "work"
+    events: list[LLMCallRecord] = []
+    provider.set_llm_call_observer(events.append)
+
+    await provider.chat_with_retry(messages=[{"role": "user", "content": "hello"}])
+
+    assert events[0].credential == "work"
+
+
+@pytest.mark.asyncio
+async def test_a_client_without_a_resolved_credential_reports_no_credential() -> None:
+    provider = _SequenceProvider(
+        iter([LLMResponse(content="ok", usage=LLMUsage.reported(input_tokens=5, output_tokens=2))])
+    )
+    events: list[LLMCallRecord] = []
+    provider.set_llm_call_observer(events.append)
+
+    await provider.chat_with_retry(messages=[{"role": "user", "content": "hello"}])
+
+    assert events[0].credential == ""
+
+
+@pytest.mark.asyncio
 async def test_observer_estimates_missing_success_usage_without_storing_content() -> None:
     prompt = "observer-prompt-canary-38a7cf"
     reply = "observer-response-canary-92b6de"
