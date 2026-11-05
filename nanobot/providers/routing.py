@@ -2,7 +2,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from nanobot.config.schema import Config, ModelAPIConfig, ModelPresetConfig, ProviderConfig
+from nanobot.config.schema import (
+    DEFAULT_CREDENTIAL_ID,
+    Config,
+    ModelAPIConfig,
+    ModelPresetConfig,
+    ProviderConfig,
+    ProviderCredential,
+)
 from nanobot.providers.model_api import ModelAPICapabilities, ProviderAPI, RequestAPI
 from nanobot.providers.registry import ProviderSpec, create_dynamic_spec, find_by_name
 from nanobot.providers.request_overrides import (
@@ -54,6 +61,64 @@ def _provider_spec_for_config(
             thinking_style=provider_config.thinking_style or "",
         )
     return spec
+
+
+def _select_credential(
+    provider_name: str,
+    provider_config: ProviderConfig | None,
+    preset: ModelPresetConfig,
+    spec: ProviderSpec | None,
+) -> ProviderConfig | None:
+    """Point the route at the credential the preset named.
+
+    Everything below - and every provider constructor in the factory - keeps reading
+    ``api_key``, so the choice is made once here and carried as a copy rather than
+    threaded through the whole provider layer as a new argument.
+    """
+    if provider_config is None:
+        return None
+    if provider_config.credentials and spec is not None and spec.is_oauth:
+        raise ValueError(
+            f"Provider '{provider_name}' signs in with OAuth and keeps one credential "
+            "under the provider name, so it cannot declare a credentials list."
+        )
+    wanted = (preset.credential or "").strip()
+    if not provider_config.credentials and wanted in ("", DEFAULT_CREDENTIAL_ID):
+        return provider_config
+
+    usable = [c for c in provider_config.all_credentials() if c.api_key.strip()]
+    if wanted:
+        chosen = provider_config.credential(wanted)
+        if chosen is None:
+            raise ValueError(_no_credential_message(provider_name, provider_config, wanted))
+        if not chosen.api_key.strip():
+            raise ValueError(
+                f"Credential {wanted!r} of provider '{provider_name}' has no api_key configured."
+            )
+        return provider_config.model_copy(update={"api_key": chosen.api_key})
+    if len(usable) > 1:
+        raise ValueError(
+            f"Provider '{provider_name}' has {len(usable)} credentials; the model preset "
+            f"must name one of: {_credential_ids(provider_config, usable)}."
+        )
+    if len(usable) == 1:
+        return provider_config.model_copy(update={"api_key": usable[0].api_key})
+    return provider_config
+
+
+def _credential_ids(
+    provider_config: ProviderConfig,
+    usable: list[ProviderCredential] | None = None,
+) -> str:
+    credentials = usable if usable is not None else provider_config.all_credentials()
+    return ", ".join(f"{c.id} ({c.label})" if c.name else c.id for c in credentials)
+
+
+def _no_credential_message(provider_name: str, provider_config: ProviderConfig, wanted: str) -> str:
+    return (
+        f"Provider '{provider_name}' has no credential {wanted!r}; "
+        f"available: {_credential_ids(provider_config)}."
+    )
 
 
 def resolve_model_api(
@@ -109,6 +174,7 @@ def resolve_provider_route(
     if not provider_name:
         raise ValueError(f"No provider is configured for model '{model}'.")
     spec = _provider_spec_for_config(provider_name, provider_config)
+    provider_config = _select_credential(provider_name, provider_config, preset, spec)
     if spec and spec.is_transcription_only:
         raise ValueError(f"Provider '{provider_name}' only supports transcription.")
     backend = spec.backend if spec else "openai_compat"
