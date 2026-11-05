@@ -25,6 +25,11 @@ class LLMCallRecord:
     error_status_code: int | None = None
     error_kind: str | None = None
     credential: str = ""
+    # What the call cost, decided by the service's rate table at the moment it ran.
+    # None means the service declares no price, not that the call was free.
+    amount: float | None = None
+    currency: str = ""
+    price_basis: str = ""
 
     def __post_init__(self) -> None:
         if self.started_at_ms < 0 or self.duration_ms < 0:

@@ -141,19 +141,53 @@ async def test_observer_reports_the_credential_the_client_spends() -> None:
     await provider.chat_with_retry(messages=[{"role": "user", "content": "hello"}])
 
     assert events[0].credential == "work"
+    # no price table configured is not the same as a call that cost nothing
+    assert events[0].amount is None
+    assert events[0].currency == ""
 
 
 @pytest.mark.asyncio
-async def test_a_client_without_a_resolved_credential_reports_no_credential() -> None:
-    provider = _SequenceProvider(
-        iter([LLMResponse(content="ok", usage=LLMUsage.reported(input_tokens=5, output_tokens=2))])
+async def test_a_priced_call_stores_the_money_it_cost_at_the_time() -> None:
+    from nanobot.pricing.config import ProviderPricing
+
+    pricing = ProviderPricing.model_validate(
+        {
+            "unit": "money",
+            "currency": "CNY",
+            "models": {"test-model": {"offPeak": {"input": 1, "output": 4}}},
+        }
     )
+    provider = _SequenceProvider(
+        iter(
+            [
+                LLMResponse(content="ok", usage=LLMUsage.reported(input_tokens=1_000, output_tokens=500)),
+                LLMResponse(content="ok", usage=LLMUsage.reported(input_tokens=1_000, output_tokens=500)),
+            ]
+        )
+    )
+    provider.pricing = pricing
     events: list[LLMCallRecord] = []
     provider.set_llm_call_observer(events.append)
 
     await provider.chat_with_retry(messages=[{"role": "user", "content": "hello"}])
 
-    assert events[0].credential == ""
+    record = events[0]
+    assert record.amount == pytest.approx(0.001 + 0.002)
+    assert record.currency == "CNY"
+    basis = json.loads(record.price_basis)
+    assert basis["row"] == "test-model"
+    assert basis["rates"] == [1.0, 1.0, 4.0]  # no cache rate declared, so the input rate
+    assert basis["cachedAsInput"] is True
+
+    # the price is read when the call is recorded, so a revision prices the next call
+    # and leaves this row at the money it actually cost
+    provider.pricing = ProviderPricing.model_validate(
+        {"unit": "money", "currency": "CNY", "models": {"test-model": {"offPeak": {"input": 9, "output": 9}}}}
+    )
+    await provider.chat_with_retry(messages=[{"role": "user", "content": "again"}])
+
+    assert record.amount == pytest.approx(0.003)
+    assert events[1].amount == pytest.approx(0.009 + 0.0045)
 
 
 @pytest.mark.asyncio

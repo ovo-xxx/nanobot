@@ -5,15 +5,14 @@ the token and charges more inside its peak window, a reseller of the same model 
 keep one price all day, and a subscription plan sells a quota, not a price. So all of
 it hangs on ``providers.<name>.pricing`` and nothing is inferred from the model name.
 
-That entry is a list, in date order: when a service changes its prices you add a block
-with the day the new list starts applying and keep the old one, so last month's calls
-are still priced against last month's money.
+The block is the price list in force from now on. A call is priced when it is
+recorded, and the money it cost is stored with it, so a later revision of this block
+leaves the older rows at the price they actually ran at.
 """
 
 from __future__ import annotations
 
 import re
-from collections.abc import Sequence
 from datetime import date
 from typing import Literal, NamedTuple
 
@@ -123,15 +122,10 @@ class PricingWindow(Base):
 
 
 class ProviderPricing(Base):
-    """One price list of one service, valid from one day onward.
-
-    A service that raises its prices gets a second block with the new date; the block
-    it had before stays in the config, so last month's calls keep last month's money.
-    """
+    """The price list one service currently sells under."""
 
     unit: PriceUnit = "money"
     currency: str = ""
-    effective_from: str = ""
     utc_offset_seconds: int = Field(default=0, ge=-43200, le=50400)
     band: PeakBand | None = None
     models: dict[str, ModelPricing] = Field(default_factory=dict)
@@ -153,14 +147,6 @@ class ProviderPricing(Base):
         cleaned = value.strip()
         if cleaned:
             _parse_day(cleaned)
-        return cleaned
-
-    @field_validator("effective_from")
-    @classmethod
-    def _validate_effective_from(cls, value: str) -> str:
-        cleaned = value.strip()
-        if cleaned:
-            return _parse_day(cleaned).isoformat()
         return cleaned
 
     @model_validator(mode="after")
@@ -192,40 +178,6 @@ class ProviderPricing(Base):
         if not candidates:
             return None
         return max(candidates, key=lambda item: len(item[0]))
-
-    @property
-    def starts_on(self) -> date:
-        """The day this list takes effect; an undated list has always been in force."""
-        return _parse_day(self.effective_from) if self.effective_from else date.min
-
-
-def check_price_blocks(blocks: Sequence[ProviderPricing]) -> None:
-    """Keep a service's price history readable as a history.
-
-    An undated block means "in force until the first dated change", so a second one
-    would leave no way to tell which history a call should have been priced against.
-    The unit and the wall clock stay the same across a service's history: a plan that
-    started charging by the token is a different declaration, not a price revision.
-    """
-    undated = [block for block in blocks if not block.effective_from]
-    if len(undated) > 1:
-        raise ValueError("at most one price block may leave effectiveFrom unset")
-    dated = [block.effective_from for block in blocks if block.effective_from]
-    duplicated = sorted({day for day in dated if dated.count(day) > 1})
-    if duplicated:
-        raise ValueError(f"price blocks repeat an effective date: {', '.join(duplicated)}")
-    if len({block.unit for block in blocks}) > 1:
-        raise ValueError("price blocks of one service must all use the same unit")
-    if len({block.utc_offset_seconds for block in blocks}) > 1:
-        raise ValueError("price blocks of one service must all state the same clock")
-
-
-def block_on(day: date, blocks: Sequence[ProviderPricing]) -> ProviderPricing | None:
-    """The list in force on a local calendar day: the newest one that has started."""
-    covering = [block for block in blocks if block.starts_on <= day]
-    if not covering:
-        return None
-    return max(covering, key=lambda block: block.starts_on)
 
 
 _WINDOW = re.compile(r"^([01]\d|2[0-3]):([0-5]\d)-([01]\d|2[0-3]):([0-5]\d)$")

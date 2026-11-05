@@ -154,6 +154,7 @@ def _make_provider_core(
 
     provider.generation = preset.to_generation_settings()
     provider.credential_id = setup.credential_id
+    provider.pricing = setup.provider_config.pricing if setup.provider_config else None
     return provider
 
 
