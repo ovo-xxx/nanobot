@@ -149,6 +149,10 @@ class ModelPresetConfig(RequestOverrides):
 
     model: str
     provider: str = "auto"
+    # Which credential of that provider to spend. Empty means the provider's own
+    # api_key; it is required once the provider holds more than one, so a preset can
+    # never silently depend on list order.
+    credential: str = ""
     max_tokens: int = 8192
     context_window_tokens: int = 200_000
     temperature: float = 0.1
@@ -241,6 +245,39 @@ class AgentsConfig(Base):
     defaults: AgentDefaults = Field(default_factory=AgentDefaults)
 
 
+DEFAULT_CREDENTIAL_ID = "default"
+
+
+class ProviderCredential(Base):
+    """One named API key of a provider.
+
+    ``providers.<name>.api_key`` stays the credential with id ``default`` so an
+    existing config never has to change and every reader that only wants "the key
+    for this provider" keeps working. The list holds the additional ones, which is
+    also why the secret is not stored twice.
+    """
+
+    id: str = Field(min_length=1, max_length=56)
+    name: str = ""  # display label; the id is what presets and usage rows carry
+    api_key: str = Field(default="", repr=False)
+
+    @field_validator("id")
+    @classmethod
+    def _validate_id(cls, value: str) -> str:
+        cleaned = value.strip().lower().replace("_", "-")
+        if not cleaned:
+            raise ValueError("credential id is required")
+        if cleaned == DEFAULT_CREDENTIAL_ID:
+            raise ValueError(f"credential id {DEFAULT_CREDENTIAL_ID!r} is reserved for the provider's own api_key")
+        if not all(char.isalnum() or char == "-" for char in cleaned):
+            raise ValueError("credential id may use letters, digits and dashes only")
+        return cleaned
+
+    @property
+    def label(self) -> str:
+        return self.name or self.id
+
+
 class ProviderConfig(Base):
     """LLM provider configuration."""
 
@@ -256,6 +293,12 @@ class ProviderConfig(Base):
     extra_query: dict[str, str] | None = None  # Extra query params (e.g. api-version for Azure-style gateways)
     use_proxy: bool = False
     thinking_style: str | None = None
+    # Additional credentials for the same service. A preset picks one by id so the
+    # key decides which account's quota and rate limits a turn spends.
+    credentials: list[ProviderCredential] = Field(
+        default_factory=list,
+        exclude_if=lambda value: not value,
+    )
 
     # Valid values mirror the keys of _THINKING_STYLE_MAP in
     # nanobot/providers/openai_compat_provider.py. Kept duplicated here to
@@ -278,6 +321,38 @@ class ProviderConfig(Base):
                 f"(or empty/omitted)."
             )
         return v
+
+    @model_validator(mode="after")
+    def _validate_credential_ids(self):
+        seen: set[str] = set()
+        for credential in self.credentials:
+            if credential.id in seen:
+                raise ValueError(f"duplicate credential id {credential.id!r}")
+            seen.add(credential.id)
+        return self
+
+    @property
+    def has_credential(self) -> bool:
+        """Whether this provider can be used at all, counting the default key."""
+        return bool((self.api_key or "").strip()) or any(
+            credential.api_key.strip() for credential in self.credentials
+        )
+
+    def all_credentials(self) -> list[ProviderCredential]:
+        """The default key first, then the named ones, in config order."""
+        # model_construct: the reserved-id rule guards what a config may declare, and
+        # this synthetic row is exactly the provider's own api_key.
+        default = ProviderCredential.model_construct(
+            id=DEFAULT_CREDENTIAL_ID,
+            name=DEFAULT_CREDENTIAL_ID,
+            api_key=self.api_key or "",
+        )
+        return [default, *self.credentials]
+
+    def credential(self, credential_id: str | None) -> ProviderCredential | None:
+        """Look a credential up by id; empty id means the default one."""
+        wanted = (credential_id or DEFAULT_CREDENTIAL_ID).strip().lower().replace("_", "-")
+        return next((c for c in self.all_credentials() if c.id == wanted), None)
 
 
 class BedrockProviderConfig(ProviderConfig):
