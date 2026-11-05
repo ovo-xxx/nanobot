@@ -2,6 +2,7 @@ import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from rapidfuzz.distance import Indel
 
 from agent.runner_helpers import make_run_spec
 from nanobot.agent.hooks import FileEditActivityHook
@@ -11,7 +12,6 @@ from nanobot.agent.tools.apply_patch import ApplyPatchTool
 from nanobot.agent.tools.filesystem import EditFileTool, WriteFileTool
 from nanobot.config.schema import AgentDefaults
 from nanobot.providers.base import LLMResponse, ToolCallRequest
-from nanobot.utils.file_edit_events import Indel
 from nanobot.utils.progress_events import output_events
 
 _MAX_TOOL_RESULT_CHARS = AgentDefaults().max_tool_result_chars
