@@ -5,9 +5,14 @@ from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from itertools import groupby, islice
 from pathlib import Path
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
-from rapidfuzz.distance import Indel, Opcode, Opcodes
+if TYPE_CHECKING:
+    from rapidfuzz.distance import Opcode, Opcodes
+
+# rapidfuzz is only needed to compute a diff between two file states, but it is
+# imported by the hook package at gateway startup, which pulls its native extension
+# into every process. The two functions below import it when they actually run.
 
 TRACKED_FILE_EDIT_TOOLS = frozenset({"write_file", "edit_file", "apply_patch"})
 _MAX_SNAPSHOT_BYTES = 2 * 1024 * 1024
@@ -56,6 +61,8 @@ class FileDiff:
 
     @classmethod
     def from_text(cls, before: str, after: str) -> FileDiff:
+        from rapidfuzz.distance import Indel
+
         before_lines = before.replace("\r\n", "\n").splitlines()
         after_lines = after.replace("\r\n", "\n").splitlines()
         opcodes = Indel.opcodes(before_lines, after_lines)
@@ -75,6 +82,8 @@ class FileDiff:
         )
 
     def _groups(self, context: int) -> Iterator[list[Opcode]]:
+        from rapidfuzz.distance import Opcode
+
         codes = list(self.opcodes)
         if not codes:
             return
