@@ -25,6 +25,7 @@ from nanobot.config.provider_api_migration import migrate_legacy_provider_api
 from nanobot.config.timezone import detect_system_timezone
 from nanobot.config_base import Base
 from nanobot.cron.types import CronSchedule
+from nanobot.pricing.config import ProviderPricing
 from nanobot.providers.generation import GenerationSettings
 from nanobot.providers.model_api import ModelAPICapabilities, RequestAPI
 
@@ -298,6 +299,13 @@ class ProviderConfig(Base):
     credentials: list[ProviderCredential] = Field(
         default_factory=list,
         exclude_if=lambda value: not value,
+    )
+    # What this service charges, and how it counts. It hangs on the service rather
+    # than the model because a reseller of the same model prices it differently, or
+    # not at all.
+    pricing: ProviderPricing | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
     )
 
     # Valid values mirror the keys of _THINKING_STYLE_MAP in
