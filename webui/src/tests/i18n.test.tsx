@@ -478,12 +478,36 @@ describe("webui i18n", () => {
     }
   });
 
-  it("defaults to English until the user chooses another language", () => {
+  it("follows the browser language until the user chooses one", () => {
+    const descriptor = Object.getOwnPropertyDescriptor(navigator, "languages");
+    const withLanguages = (value: readonly string[]) => {
+      Object.defineProperty(navigator, "languages", { value, configurable: true, writable: true });
+    };
     localStorage.removeItem(LOCALE_STORAGE_KEY);
-    expect(resolveInitialLocale()).toBe("en");
+    try {
+      withLanguages(["zh-CN", "en-US"]);
+      expect(resolveInitialLocale()).toBe("zh-CN");
 
-    localStorage.setItem(LOCALE_STORAGE_KEY, "zh-CN");
-    expect(resolveInitialLocale()).toBe("zh-CN");
+      withLanguages(["zh-TW"]);
+      expect(resolveInitialLocale()).toBe("zh-TW");
+
+      // An unsupported top preference must not fall through to a later one: the
+      // preboot script in index.html reads only the first candidate, and the app has
+      // to agree with it or the splash and the UI come up in different languages.
+      withLanguages(["de", "ja"]);
+      expect(resolveInitialLocale()).toBe("en");
+
+      withLanguages([]);
+      expect(resolveInitialLocale()).toBe("en");
+
+      // A stored choice is the user's own and outranks the browser.
+      withLanguages(["zh-CN"]);
+      localStorage.setItem(LOCALE_STORAGE_KEY, "en");
+      expect(resolveInitialLocale()).toBe("en");
+    } finally {
+      if (descriptor) Object.defineProperty(navigator, "languages", descriptor);
+      else delete (navigator as { languages?: unknown }).languages;
+    }
   });
 
   it("lists each language by its native name", async () => {

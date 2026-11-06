@@ -18,12 +18,18 @@ export type SupportedLocale = (typeof supportedLocales)[number]["code"];
 export const defaultLocale: SupportedLocale = "en";
 export const fallbackLocale: SupportedLocale = "en";
 
-export function normalizeLocale(
+/**
+ * Map a language tag onto a supported locale, or return null when the tag has no
+ * supported locale behind it. Callers that must always land somewhere use
+ * {@link normalizeLocale}; callers that need to tell "unsupported" apart from
+ * "English" (the browser probe) use this.
+ */
+export function matchSupportedLocale(
   input: string | null | undefined,
-): SupportedLocale {
-  if (!input) return defaultLocale;
+): SupportedLocale | null {
+  if (!input) return null;
   const trimmed = input.trim();
-  if (!trimmed) return defaultLocale;
+  if (!trimmed) return null;
 
   const exact = supportedLocales.find((locale) => locale.code === trimmed);
   if (exact) return exact.code;
@@ -48,7 +54,13 @@ export function normalizeLocale(
   const baseMatch = supportedLocales.find(
     (locale) => locale.code.toLowerCase() === base,
   );
-  return baseMatch?.code ?? defaultLocale;
+  return baseMatch?.code ?? null;
+}
+
+export function normalizeLocale(
+  input: string | null | undefined,
+): SupportedLocale {
+  return matchSupportedLocale(input) ?? defaultLocale;
 }
 
 function readStoredLocale(): SupportedLocale | null {
@@ -61,8 +73,29 @@ function readStoredLocale(): SupportedLocale | null {
   }
 }
 
+/**
+ * The browser's own preference, as the preboot script in index.html reads it.
+ *
+ * That inline script localizes the splash screen from `navigator.languages[0] ||
+ * navigator.language`, so the app has to consult the same value or a first visit
+ * renders a Chinese splash and then flips the whole UI to English when React
+ * mounts. Only the first non-empty candidate is used, matching the script exactly:
+ * a browser whose top preference is unsupported stays on English in both places.
+ */
+function readBrowserLocale(): SupportedLocale | null {
+  if (typeof navigator === "undefined") return null;
+  try {
+    const preferred = Array.isArray(navigator.languages)
+      ? navigator.languages.find((tag) => typeof tag === "string" && tag.trim().length > 0)
+      : undefined;
+    return matchSupportedLocale(preferred ?? navigator.language);
+  } catch {
+    return null;
+  }
+}
+
 export function resolveInitialLocale(): SupportedLocale {
-  return readStoredLocale() ?? defaultLocale;
+  return readStoredLocale() ?? readBrowserLocale() ?? defaultLocale;
 }
 
 export function persistLocale(locale: SupportedLocale): void {
