@@ -148,6 +148,18 @@ _WEBUI_MUTATION_REQUEST_ATTR = "_nanobot_webui_mutation_request"
 _NO_STORE_HEADERS = [("Cache-Control", "no-store")]
 
 
+def restart_pending_response() -> Response | None:
+    """`503 + Retry-After` while the gateway drains for a planned restart, else None."""
+    retry_after = restart_retry_after_seconds()
+    if retry_after is None:
+        return None
+    return _http_response(
+        b"gateway restarting",
+        status=503,
+        extra_headers=[("Retry-After", str(int(round(retry_after))))],
+    )
+
+
 def _quoted_etag(revision: str) -> str:
     return f'"{revision}"'
 
@@ -527,13 +539,9 @@ class GatewayHTTPHandler:
             if got == "/webui/bootstrap":
                 # 计划内重启的排空窗口：告诉客户端多久后再来，别把 0.5/1/2 秒的
                 # 短间隔浪费在一个马上就要关门的端口上。
-                retry_after = restart_retry_after_seconds()
-                if retry_after is not None:
-                    return _http_response(
-                        b"gateway restarting",
-                        status=503,
-                        extra_headers=[("Retry-After", str(int(round(retry_after))))],
-                    )
+                pending = restart_pending_response()
+                if pending is not None:
+                    return pending
             with self.bus.admission.activity():
                 response = await self._dispatch_resolved(connection, request, got)
             return response
