@@ -38,22 +38,39 @@ class AutoCompact:
         self.consolidator = consolidator
         self._boot_ttl = session_ttl_minutes
         self._defaults_ref = defaults_config
+        self._ttl_override: int | None = None
         self._archiving: set[str] = set()
         self._summaries: dict[str, SessionSummary] = {}
         self._bind_events = bind_events
         self._session_lock = session_lock
 
     @property
-    def ttl_minutes(self) -> int:
-        """Idle window, read from the live config so a reload applies without restart."""
+    def _ttl(self) -> int:
+        """Idle window: an explicit assignment wins, otherwise read the live config.
+
+        Callers and tests set ``_ttl`` directly (see test_runtime_maintenance), so a
+        plain live-read property would silently ignore them; the setter records that
+        choice as an override instead.
+        """
+        override = getattr(self, "_ttl_override", None)
+        if override is not None:
+            return override
         ref = getattr(self, "_defaults_ref", None)
         if ref is not None:
             return ref.session_ttl_minutes
         return getattr(self, "_boot_ttl", 0)
 
+    @_ttl.setter
+    def _ttl(self, value: int) -> None:
+        self._ttl_override = int(value)
+
+    @property
+    def ttl_minutes(self) -> int:
+        return self._ttl
+
     @property
     def enabled(self) -> bool:
-        return self.ttl_minutes > 0
+        return self._ttl > 0
 
     def _is_expired(self, ts: datetime | str | None,
                     now: datetime | None = None) -> bool:
@@ -71,7 +88,7 @@ class AutoCompact:
             # list_sessions() forwards raw persisted metadata; an unusable value
             # must not escape the idle scan and stop the agent loop.
             return False
-        return idle_seconds >= self.ttl_minutes * 60
+        return idle_seconds >= self._ttl * 60
 
     async def check_expired(
         self,
