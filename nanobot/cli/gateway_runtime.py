@@ -39,8 +39,15 @@ from nanobot.cli.webui_support import (
     _webui_display_url,
     _webui_endpoint_reachable,
 )
-from nanobot.config.paths import get_data_dir, is_default_workspace
+from nanobot.config.paths import get_data_dir, get_runtime_subdir, is_default_workspace
 from nanobot.config.schema import Config
+from nanobot.gateway.idle_restart import (
+    request_path as idle_restart_request_path,
+)
+from nanobot.gateway.idle_restart import (
+    set_restart_retry_after,
+    watch_idle_restart,
+)
 from nanobot.gateway.runtime import GatewayHealthIdentity, GatewayInstance, GatewayRuntime
 from nanobot.installation_lock import installation_access
 from nanobot.security.network import is_loopback_host
@@ -1074,6 +1081,16 @@ def _run_claimed_gateway(
                         _hot_reload_config,
                     ),
                     name="nanobot-config-watcher",
+                ),
+                asyncio.create_task(
+                    watch_idle_restart(
+                        idle_restart_request_path(get_runtime_subdir("run")),
+                        maintenance=agent.maintenance,
+                        shutdown_event=shutdown_event,
+                        on_arm=lambda request: set_restart_retry_after(request.eta_seconds),
+                        on_abort=lambda detail: set_restart_retry_after(None),
+                    ),
+                    name="nanobot-idle-restart",
                 ),
                 asyncio.create_task(_run_agent(), name="nanobot-agent-loop"),
                 asyncio.create_task(channels.start_all(), name="nanobot-channels"),

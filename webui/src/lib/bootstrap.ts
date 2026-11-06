@@ -59,6 +59,17 @@ export function consumeUrlBootstrapSecret(): string {
   return secret;
 }
 
+/** The gateway is draining for a planned restart; retry after the announced delay. */
+export class GatewayRestartPendingError extends Error {
+  readonly retryAfterMs: number;
+
+  constructor(retryAfterMs: number) {
+    super("gateway restarting");
+    this.name = "GatewayRestartPendingError";
+    this.retryAfterMs = retryAfterMs;
+  }
+}
+
 /**
  * Fetch a short-lived token + the WebSocket path from the gateway's
  * ``/webui/bootstrap`` endpoint.
@@ -80,6 +91,13 @@ export async function fetchBootstrap(
   if (!res.ok) {
     if (res.status === 401 || res.status === 403) {
       throw new BootstrapAuthRequiredError(`bootstrap failed: HTTP ${res.status}`);
+    }
+    if (res.status === 503) {
+      // 排空窗口里网关会带 Retry-After；没有头就给个保守的 5s。
+      const raw = Number.parseFloat(res.headers.get("Retry-After") ?? "");
+      throw new GatewayRestartPendingError(
+        Number.isFinite(raw) && raw > 0 ? raw * 1000 : 5000,
+      );
     }
     throw new Error(`bootstrap failed: HTTP ${res.status}`);
   }

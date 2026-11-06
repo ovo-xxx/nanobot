@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { GatewayRestartPendingError } from "@/lib/bootstrap";
 import { NanobotClient } from "@/lib/nanobot-client";
 import type { SidebarStatePayload } from "@/lib/types";
 
@@ -302,6 +303,39 @@ describe("NanobotClient", () => {
       status: 503,
       message: "Socket closed before WebUI response",
     });
+  });
+
+it("waits for the announced restart ETA before spending its short backoff intervals", async () => {
+    const before = FakeSocket.instances.length;
+    let reauthCalls = 0;
+    const client = new NanobotClient({
+      url: "ws://test",
+      reconnect: true,
+      maxBackoffMs: 1_000,
+      socketFactory: (url) => new FakeSocket(url) as unknown as WebSocket,
+      onReauth: async () => {
+        reauthCalls += 1;
+        if (reauthCalls === 1) throw new GatewayRestartPendingError(4_000);
+        return null;
+      },
+    });
+    client.connect();
+    const first = FakeSocket.instances[before];
+    first.fakeOpen();
+    first.fakeCloseWithCode(1006);
+
+    // 500ms 后第一次退避到期 → 拿到 ETA 4s → 之后 4.3s 内不再建连接，
+    // 短间隔留给服务真正回来之后，而不是撞在正要关门的端口上。
+    await vi.advanceTimersByTimeAsync(600);
+    expect(reauthCalls).toBe(1);
+    expect(FakeSocket.instances.length).toBe(before + 1);
+    // 还在网关报的 ETA 之内：不该拿 0.5/1/2 去撞一个正要关门的端口
+    await vi.advanceTimersByTimeAsync(3_000);
+    expect(FakeSocket.instances.length).toBe(before + 1);
+    await vi.advanceTimersByTimeAsync(1_400);
+    expect(FakeSocket.instances.length).toBe(before + 2);
+    expect(reauthCalls).toBe(2);
+    client.close();
   });
 
   it("replays the exact serialized mutation frame after reconnect", async () => {
