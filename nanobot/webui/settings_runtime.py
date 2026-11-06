@@ -71,10 +71,15 @@ class RuntimeConfigUpdate:
     errors: tuple[str, ...] = ()
 
     def __bool__(self) -> bool:
-        return bool(self.applied)
+        # “有改动”：不管是立刻生效还是攒到下次重启，都算这次保存改了东西
+        return bool(self.applied or self.restart_required)
 
     @property
     def changed(self) -> bool:
+        return bool(self.applied or self.restart_required)
+
+    @property
+    def applied_now(self) -> bool:
         return bool(self.applied)
 
     @property

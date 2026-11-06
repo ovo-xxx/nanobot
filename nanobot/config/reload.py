@@ -30,6 +30,9 @@ from pydantic import BaseModel
 FROZEN_PREFIXES: tuple[str, ...] = (
     "channels.",
     "agents.defaults.workspace",
+    # dream 调度器在网关启动时读 enabled/intervalH/modelOverride（gateway_runtime.py:926、
+    # loop.py:602），热改不会改变已在跑的计划
+    "agents.defaults.dream",
 )
 
 #: Individual leaves that either need a restart or must not move at runtime.
