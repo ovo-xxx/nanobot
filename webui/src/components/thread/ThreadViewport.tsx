@@ -78,6 +78,7 @@ interface ThreadViewportProps {
 }
 
 const NEAR_BOTTOM_PX = 48;
+const SCROLL_INTENT_EPSILON_PX = 1;
 const PROMPT_TOP_INSET_PX = 48;
 const HISTORY_PREFETCH_MIN_PX = 160;
 const HISTORY_PREFETCH_MAX_PX = 480;
@@ -321,6 +322,7 @@ export const ThreadViewport = forwardRef<ThreadViewportHandle, ThreadViewportPro
   const restoreScrollAfterPrependRef =
     useRef<{ height: number; top: number } | null>(null);
   const historyScrollAnchorRef = useRef<HistoryScrollAnchor | null>(null);
+  const lastScrollFrameRef = useRef<{ top: number; max: number } | null>(null);
   const previousLoadingOlderRef = useRef(loadingOlder);
   const composerDockHeightRef = useRef(0);
   const [atBottom, setAtBottom] = useState(true);
@@ -928,6 +930,22 @@ export const ThreadViewport = forwardRef<ThreadViewportHandle, ThreadViewportPro
       if (el.scrollTop > 1) historySpringRef.current?.leaveBoundary();
       const distance = el.scrollHeight - el.scrollTop - el.clientHeight;
       const near = distance < NEAR_BOTTOM_PX;
+      // Browser autoscroll (middle click) and scrollbar drags move the viewport
+      // without emitting `wheel`, so no input handler can announce them. An
+      // automatic mode only ever drives the camera toward the tail, and layout
+      // churn moves the boundary along with the offset; an upward move at an
+      // unchanged boundary can therefore only be the user taking the camera.
+      const frame = { top: el.scrollTop, max: el.scrollHeight - el.clientHeight };
+      const previousFrame = lastScrollFrameRef.current;
+      lastScrollFrameRef.current = frame;
+      if (
+        previousFrame
+        && frame.top < previousFrame.top - SCROLL_INTENT_EPSILON_PX
+        && Math.abs(frame.max - previousFrame.max) <= SCROLL_INTENT_EPSILON_PX
+        && !threadMotionRef.current?.isAutoFollowPaused()
+      ) {
+        yieldCameraToUser();
+      }
       // A detached history page's bottom is not the live tail.
       const owner = threadMotionRef.current?.observeScroll(near && !historyWindow) ?? "automatic";
       const logicallyAtBottom = !historyWindow && (owner === "automatic" || (owner === "navigation" && near));
