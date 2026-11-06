@@ -406,11 +406,11 @@ class TestAgentLoopTTLParam:
 
     def test_loop_stores_ttl(self, tmp_path):
         loop = _make_loop(tmp_path, session_ttl_minutes=25)
-        assert loop.auto_compact._ttl == 25
+        assert loop.auto_compact.ttl_minutes == 25
 
     def test_explicit_zero_ttl_disables_loop_compaction(self, tmp_path):
         loop = _make_loop(tmp_path, session_ttl_minutes=0)
-        assert loop.auto_compact._ttl == 0
+        assert loop.auto_compact.ttl_minutes == 0
 
 class TestAutoCompact:
 

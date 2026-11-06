@@ -121,7 +121,7 @@ class TestUnifiedSessionDispatch:
 
     def test_unified_session_default_is_false(self, tmp_path: Path):
         loop = _make_loop(tmp_path)
-        assert loop._unified_session is False
+        assert loop.unified_session is False
 
 
 class TestUnifiedSessionConfig:

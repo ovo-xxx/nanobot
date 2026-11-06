@@ -118,8 +118,10 @@ from nanobot.utils.runtime import (
 
 if TYPE_CHECKING:
     from nanobot.config.schema import (
+        AgentDefaults,
         ChannelsConfig,
         Config,
+        GatewayConfig,
         ToolsConfig,
     )
     from nanobot.cron.service import CronService
@@ -295,6 +297,8 @@ class AgentLoop:
         unified_session: bool = False,
         disabled_skills: list[str] | None = None,
         tools_config: ToolsConfig | None = None,
+        defaults_config: AgentDefaults | None = None,
+        gateway_config: GatewayConfig | None = None,
         network_config: NetworkConfig | None = None,
         provider_snapshot_loader: Callable[..., ProviderSnapshot] | None = None,
         provider_signature: tuple[object, ...] | None = None,
@@ -316,6 +320,12 @@ class AgentLoop:
         _tc = tools_config or ToolsConfig()
         defaults = AgentDefaults()
         self.bus = bus
+        # Live config handles: the file watcher mutates these objects in place, so knobs
+        # read through them take effect without a restart. `_runtime_overrides` holds
+        # values an operator moved with `my set` during this session.
+        self._defaults_ref = defaults_config
+        self._gateway_ref = gateway_config
+        self._runtime_overrides: dict[str, Any] = {}
         self.execution_policy: ExecutionPolicy | None = None
         self._recovery_admission = recovery_admission
         if turn_delivery_factory is not None:
@@ -326,7 +336,7 @@ class AgentLoop:
             self.turn_delivery_factory = TurnDeliveryFactory(bus)
         self.runtime_event_publisher = self.turn_delivery_factory.runtime_event_publisher
         self.channels_config = channels_config
-        self.restart_mode = restart_mode
+        self._boot_restart_mode = restart_mode
         self._runtime_model_publisher = runtime_model_publisher
         self.workspace = workspace
         initial_model = model or provider.get_default_model()
@@ -353,12 +363,12 @@ class AgentLoop:
             preset_snapshot_loader=preset_snapshot_loader,
         )
         self.dream_model_preset = dream_model_preset
-        self.max_tool_result_chars = (
+        self._boot_max_tool_result_chars = (
             max_tool_result_chars
             if max_tool_result_chars is not None
             else defaults.max_tool_result_chars
         )
-        self.provider_retry_mode = provider_retry_mode
+        self._boot_provider_retry_mode = provider_retry_mode
         self.tools_config = _tc
         self.network_config = network_config or NetworkConfig()
         self.web_config = _tc.web
@@ -409,7 +419,7 @@ class AgentLoop:
             consolidator=self.consolidator,
             session_manager=self.sessions,
         )
-        self._unified_session = unified_session
+        self._unified_session = unified_session if defaults_config is None else None
         self._running = False
         self._runtime_context_providers: list[RuntimeContextProvider] = []
         self._active_tasks: dict[str, set[asyncio.Task[Any]]] = {}
@@ -446,6 +456,7 @@ class AgentLoop:
             sessions=self.sessions,
             consolidator=self.consolidator,
             session_ttl_minutes=session_ttl_minutes,
+            defaults_config=self._defaults_ref,
             bind_events=self._idle_events,
             session_lock=self._get_session_lock,
         )
@@ -459,6 +470,75 @@ class AgentLoop:
         if builtin_assembly is not None:
             self.execution_policy = builtin_assembly(self.sessions, self.bus, self.tools, self.commands)
         self._register_default_tools(provider_snapshot_loader=provider_snapshot_loader)
+
+    # --- config-backed knobs -------------------------------------------------
+    # Precedence: an explicit runtime override (`my set`) > the live config value >
+    # the value captured at construction. A reload deliberately does not clear
+    # overrides: a knob the operator moved mid-session stays where they left it.
+    # Lookups tolerate objects built without `__init__` (several tests use
+    # `AgentLoop.__new__`), so a knob read there falls back to the schema default.
+
+    def _knob(self, name: str, ref_attr: str, live_field: str, boot_attr: str, fallback: Any) -> Any:
+        overrides = getattr(self, "_runtime_overrides", None)
+        if overrides is not None and name in overrides:
+            return overrides[name]
+        ref = getattr(self, ref_attr, None)
+        if ref is not None:
+            return getattr(ref, live_field)
+        return getattr(self, boot_attr, fallback)
+
+    def _set_knob(self, name: str, value: Any) -> None:
+        overrides = getattr(self, "_runtime_overrides", None)
+        if overrides is None:
+            overrides = {}
+            self._runtime_overrides = overrides
+        overrides[name] = value
+
+    @property
+    def restart_mode(self) -> str:
+        return cast(str, self._knob(
+            "restart_mode", "_gateway_ref", "restart_mode", "_boot_restart_mode", "auto"))
+
+    @restart_mode.setter
+    def restart_mode(self, value: str) -> None:
+        self._set_knob("restart_mode", value)
+
+    @property
+    def provider_retry_mode(self) -> str:
+        return cast(str, self._knob(
+            "provider_retry_mode", "_defaults_ref", "provider_retry_mode",
+            "_boot_provider_retry_mode", "standard"))
+
+    @provider_retry_mode.setter
+    def provider_retry_mode(self, value: str) -> None:
+        self._set_knob("provider_retry_mode", value)
+
+    @property
+    def max_tool_result_chars(self) -> int:
+        return cast(int, self._knob(
+            "max_tool_result_chars", "_defaults_ref", "max_tool_result_chars",
+            "_boot_max_tool_result_chars", 16_000))
+
+    @max_tool_result_chars.setter
+    def max_tool_result_chars(self, value: int) -> None:
+        self._set_knob("max_tool_result_chars", int(value))
+
+    @property
+    def unified_session(self) -> bool:
+        # `_unified_session` doubles as the explicit slot: callers and tests that assign
+        # it directly keep working, and a loop built without a live config source keeps
+        # its constructor value. With a live source it stays None and is read through.
+        explicit = getattr(self, "_unified_session", None)
+        if explicit is not None:
+            return bool(explicit)
+        ref = getattr(self, "_defaults_ref", None)
+        if ref is not None:
+            return ref.unified_session
+        return False
+
+    @unified_session.setter
+    def unified_session(self, value: bool) -> None:
+        self._unified_session = bool(value)
 
     @classmethod
     def from_config(
@@ -521,6 +601,8 @@ class AgentLoop:
             model_preset=defaults.model_preset,
             dream_model_preset=defaults.dream.model_override,
             restart_mode=config.gateway.restart_mode,
+            defaults_config=config.agents.defaults,
+            gateway_config=config.gateway,
             provider_snapshot_loader=provider_snapshot_loader,
             preset_snapshot_loader=preset_snapshot_loader,
             tool_registry=tool_registry,
@@ -529,6 +611,7 @@ class AgentLoop:
 
     def _sync_subagent_runtime_limits(self) -> None:
         self.subagents.max_iterations = self.max_iterations
+        self.subagents.max_tool_result_chars = self.max_tool_result_chars
 
     def set_runtime_max_iterations(self, value: int) -> None:
         self.max_iterations = value
@@ -964,7 +1047,7 @@ class AgentLoop:
         self._file_state_store.discard(key)
 
     def _effective_session_key(self, msg: InboundMessage) -> str:
-        if self._unified_session and not msg.session_key_override:
+        if self.unified_session and not msg.session_key_override:
             return UNIFIED_SESSION_KEY
         return msg.session_key
 
@@ -1006,7 +1089,7 @@ class AgentLoop:
         if automation_metadata:
             return
         delivery.remember_session_route(session.metadata)
-        if self._unified_session and session.key == UNIFIED_SESSION_KEY:
+        if self.unified_session and session.key == UNIFIED_SESSION_KEY:
             remember_last_channel(session.metadata, msg.channel, msg.chat_id)
 
     async def _run_agent_loop(

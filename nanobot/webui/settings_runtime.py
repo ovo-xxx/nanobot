@@ -3,11 +3,13 @@ from __future__ import annotations
 import ipaddress
 import math
 import re
+from dataclasses import dataclass
 from pathlib import PurePosixPath, PureWindowsPath
 from typing import Any, cast
 
 from pydantic import BaseModel, TypeAdapter, ValidationError
 
+from nanobot.config.reload import apply_config_in_place
 from nanobot.config.schema import Config
 from nanobot.security.network import is_loopback_host
 from nanobot.webui.settings_contracts import WebUISettingsError
@@ -59,6 +61,27 @@ RUNTIME_CONFIG_PATHS = (
 )
 
 
+@dataclass(frozen=True, slots=True)
+class RuntimeConfigUpdate:
+    """Outcome of a runtime-config patch: live now, versus still needing a restart."""
+
+    persisted: Config
+    applied: tuple[str, ...] = ()
+    restart_required: tuple[str, ...] = ()
+    errors: tuple[str, ...] = ()
+
+    def __bool__(self) -> bool:
+        return bool(self.applied)
+
+    @property
+    def changed(self) -> bool:
+        return bool(self.applied)
+
+    @property
+    def needs_restart(self) -> bool:
+        return bool(self.restart_required)
+
+
 def _parent(config: Config, path: str) -> tuple[BaseModel, str]:
     # Keep the existing WebUI editor on the canonical hard-runtime field.
     if path == "tools.exec.timeout":
@@ -82,8 +105,14 @@ def runtime_config_payload(config: Config) -> dict[str, Any]:
 
 def update_runtime_config(
     config: Config, values: dict[str, Any], *, local_browser: bool,
-) -> bool:
-    """Validate the complete patch before changing any persisted configuration."""
+) -> RuntimeConfigUpdate:
+    """Validate the complete patch, then apply it onto the live config object.
+
+    Values that only take effect after a restart (bound ports, sandbox policy, channel
+    wiring, registration-time switches, the workspace) go into `persisted` for the file
+    but are deliberately not mutated into the running object; they come back in
+    `restart_required` so the caller can tell the user instead of silently no-oping.
+    """
     unknown = values.keys() - set(RUNTIME_CONFIG_PATHS)
     if unknown:
         raise WebUISettingsError("Unknown runtime setting: " + sorted(unknown)[0])
@@ -174,10 +203,11 @@ def update_runtime_config(
     before = runtime_config_payload(config)
     after = runtime_config_payload(validated)
     if before == after:
-        return False
-    config.agents = validated.agents
-    config.tools = validated.tools
-    config.network = validated.network
-    config.gateway = validated.gateway
-    config.api = validated.api
-    return True
+        return RuntimeConfigUpdate(persisted=validated)
+    applied = apply_config_in_place(config, validated)
+    return RuntimeConfigUpdate(
+        persisted=validated,
+        applied=applied.applied,
+        restart_required=applied.refused,
+        errors=applied.errors,
+    )

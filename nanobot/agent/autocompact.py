@@ -17,6 +17,7 @@ from nanobot.session.summary import (
 
 if TYPE_CHECKING:
     from nanobot.agent.memory import Consolidator
+    from nanobot.config.schema import AgentDefaults
     from nanobot.utils.llm_runtime import LLMRuntime
 
 SessionEventFactory = Callable[[str], EventSink]
@@ -28,21 +29,31 @@ class AutoCompact:
         sessions: SessionManager,
         consolidator: Consolidator,
         session_ttl_minutes: int = 0,
+        defaults_config: AgentDefaults | None = None,
         bind_events: SessionEventFactory | None = None,
         *,
         session_lock: Callable[[str], asyncio.Lock],
     ):
         self.sessions = sessions
         self.consolidator = consolidator
-        self._ttl = session_ttl_minutes
+        self._boot_ttl = session_ttl_minutes
+        self._defaults_ref = defaults_config
         self._archiving: set[str] = set()
         self._summaries: dict[str, SessionSummary] = {}
         self._bind_events = bind_events
         self._session_lock = session_lock
 
+    @property
+    def ttl_minutes(self) -> int:
+        """Idle window, read from the live config so a reload applies without restart."""
+        ref = getattr(self, "_defaults_ref", None)
+        if ref is not None:
+            return ref.session_ttl_minutes
+        return getattr(self, "_boot_ttl", 0)
+
     def _is_expired(self, ts: datetime | str | None,
                     now: datetime | None = None) -> bool:
-        if self._ttl <= 0 or not ts:
+        if self.ttl_minutes <= 0 or not ts:
             return False
         try:
             if isinstance(ts, str):
@@ -56,7 +67,7 @@ class AutoCompact:
             # list_sessions() forwards raw persisted metadata; an unusable value
             # must not escape the idle scan and stop the agent loop.
             return False
-        return idle_seconds >= self._ttl * 60
+        return idle_seconds >= self.ttl_minutes * 60
 
     async def check_expired(
         self,

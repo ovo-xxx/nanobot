@@ -471,10 +471,18 @@ def update_runtime_config_settings(
     values: dict[str, Any], *, local_browser: bool = False, config_path: Path | None = None,
 ) -> dict[str, Any]:
     config = _load_settings_config(config_path)
-    changed = runtime.update_runtime_config(config, values, local_browser=local_browser)
-    if changed:
-        _save_settings_config(config, config_path)
-    return settings_payload(
-        requires_restart=changed,
+    update = runtime.update_runtime_config(config, values, local_browser=local_browser)
+    if update.changed or update.needs_restart:
+        # 落盘用 validated：重启才生效的键也要写进文件，只是不进活对象
+        _save_settings_config(update.persisted, config_path)
+    payload = settings_payload(
+        requires_restart=update.needs_restart,
         config_path=config_path,
     )
+    if update.applied:
+        payload["hot_reloaded_paths"] = list(update.applied)
+    if update.restart_required:
+        payload["restart_required_paths"] = list(update.restart_required)
+    if update.errors:
+        payload["apply_errors"] = list(update.errors)
+    return payload
