@@ -1,3 +1,4 @@
+import { GatewayRestartPendingError } from "./bootstrap";
 import { uploadAttachments, uploadCapability, type AttachmentReference, type UploadCapability } from "../../../packages/client-events/attachments";
 import { DeliveryReceipts } from "../../../packages/client-events/delivery";
 import { decodeNotification } from "../../../packages/client-events/notifications";
@@ -1244,17 +1245,24 @@ export class NanobotClient {
     pending.reject(new Error(detail));
   }
 
-  private scheduleReconnect(): void {
+  private scheduleReconnect(floorMs = 0): void {
     this.setStatus("reconnecting");
     const attempt = this.reconnectAttempts++;
-    const delay = Math.min(500 * 2 ** attempt, this.maxBackoffMs);
+    const delay = Math.max(floorMs, Math.min(500 * 2 ** attempt, this.maxBackoffMs));
     this.reconnectTimer = setTimeout(async () => {
       this.reconnectTimer = null;
       if (this.options.onReauth) {
         try {
           const refreshed = await this.options.onReauth();
           if (refreshed) this.currentUrl = refreshed;
-        } catch {
+        } catch (error) {
+          if (error instanceof GatewayRestartPendingError) {
+            // 计划内重启：先等到网关报的 ETA，再把 0.5/1/2 这段最密的间隔用在
+            // 服务已经回来之后，而不是浪费在一个正要关门的端口上。
+            this.reconnectAttempts = 0;
+            this.scheduleReconnect(error.retryAfterMs + 300);
+            return;
+          }
           // fall through to retry with current URL
         }
       }

@@ -67,6 +67,7 @@ import {
   consumeUrlBootstrapSecret,
   deriveWsUrl,
   fetchBootstrap,
+  GatewayRestartPendingError,
   loadSavedSecret,
   saveSecret,
 } from "@/lib/bootstrap";
@@ -661,7 +662,8 @@ export default function App() {
               try {
                 const refreshed = await refreshReadyClient(client, runtimeSurface);
                 return refreshed.url;
-              } catch {
+              } catch (error) {
+                if (error instanceof GatewayRestartPendingError) throw error;
                 return null;
               }
             },

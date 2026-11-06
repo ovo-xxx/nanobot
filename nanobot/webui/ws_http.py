@@ -33,6 +33,7 @@ from nanobot.context_graph import ContextGraph
 from nanobot.cron.binding import CronBindingError, binding_revision
 from nanobot.cron.session_turns import is_bound_cron_job
 from nanobot.cron.types import CronJob, CronSchedule
+from nanobot.gateway.idle_restart import restart_retry_after_seconds
 from nanobot.runtime_admission import RuntimeMaintenanceError
 from nanobot.security.workspace_access import WorkspaceScope, WorkspaceScopeError
 from nanobot.session.display_history import HistoryReader
@@ -523,6 +524,16 @@ class GatewayHTTPHandler:
                     405,
                     "WebUI mutations require an authenticated WebSocket",
                 )
+            if got == "/webui/bootstrap":
+                # 计划内重启的排空窗口：告诉客户端多久后再来，别把 0.5/1/2 秒的
+                # 短间隔浪费在一个马上就要关门的端口上。
+                retry_after = restart_retry_after_seconds()
+                if retry_after is not None:
+                    return _http_response(
+                        b"gateway restarting",
+                        status=503,
+                        extra_headers=[("Retry-After", str(int(round(retry_after))))],
+                    )
             with self.bus.admission.activity():
                 response = await self._dispatch_resolved(connection, request, got)
             return response
