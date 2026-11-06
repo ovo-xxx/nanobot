@@ -948,7 +948,12 @@ export const ThreadViewport = forwardRef<ThreadViewportHandle, ThreadViewportPro
       }
       // A detached history page's bottom is not the live tail.
       const owner = threadMotionRef.current?.observeScroll(near && !historyWindow) ?? "automatic";
-      const logicallyAtBottom = !historyWindow && (owner === "automatic" || (owner === "navigation" && near));
+      // Travelling to the tail is not "away from the tail": the button was just
+      // clicked and hid itself optimistically, so an intermediate navigation
+      // frame must not bring it back for the rest of the trip.
+      const toLatest =
+        owner === "navigation" && (threadMotionRef.current?.isNavigatingLatest() ?? false);
+      const logicallyAtBottom = !historyWindow && (owner === "automatic" || (owner === "navigation" && (near || toLatest)));
       setAtBottom((current) =>
         current === logicallyAtBottom ? current : logicallyAtBottom,
       );

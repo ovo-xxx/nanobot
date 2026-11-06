@@ -339,6 +339,14 @@ export class ThreadMotionCoordinator {
   }
 
   /**
+   * A trip toward the live tail is already a commitment to be at the bottom, so
+   * consumers must not read its intermediate frames as "away from the tail".
+   */
+  isNavigatingLatest(): boolean {
+    return this.mode === "navigating-latest";
+  }
+
+  /**
    * A scroll event reports geometry; it does not prove user intent. Explicit
    * input handlers call takeUserControl() before the browser scrolls. Layout,
    * sticky positioning, and camera writes therefore remain automatic even
