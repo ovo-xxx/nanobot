@@ -122,12 +122,15 @@ export async function setAppLanguage(locale: SupportedLocale): Promise<void> {
   await initializeI18n();
   await loadLocaleResources(locale);
   await i18n.changeLanguage(locale);
+  // Only an explicit choice is remembered. Resolving the language at boot must not
+  // write anything, or the very first visit pins whatever was detected and the
+  // browser can never be followed again — the same rule useTheme follows by storing
+  // "system" rather than the theme it resolved from it.
+  persistLocale(locale);
 }
 
 function syncLocaleSideEffects(language: string) {
-  const locale = normalizeLocale(language);
-  applyDocumentLocale(locale);
-  persistLocale(locale);
+  applyDocumentLocale(normalizeLocale(language));
 }
 
 export default i18n;

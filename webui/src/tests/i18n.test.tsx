@@ -546,6 +546,32 @@ describe("webui i18n", () => {
     expect(screen.getByPlaceholderText("输入 / 查看命令，@ 引用会话或应用，$ 选择技能")).toBeInTheDocument();
   });
 
+  it("keeps following the browser when the user never picked a language", async () => {
+    const { default: i18n, initializeI18n } = await import("@/i18n");
+    localStorage.removeItem(LOCALE_STORAGE_KEY);
+
+    // Resolution at boot must not write storage. Pinning the detected value is what
+    // kept returning visitors on English forever, no matter what their browser said.
+    await act(async () => {
+      await initializeI18n();
+    });
+    expect(localStorage.getItem(LOCALE_STORAGE_KEY)).toBeNull();
+
+    // A locale change that only mirrors state still updates the document, and still
+    // leaves the choice unrecorded.
+    await act(async () => {
+      i18n.emit("languageChanged", "fr");
+    });
+    expect(document.documentElement.lang).toBe("fr");
+    expect(localStorage.getItem(LOCALE_STORAGE_KEY)).toBeNull();
+
+    // An explicit pick is remembered.
+    await act(async () => {
+      await setAppLanguage("zh-CN");
+    });
+    expect(localStorage.getItem(LOCALE_STORAGE_KEY)).toBe("zh-CN");
+  });
+
   it("updates the composer aria label when the language changes", async () => {
     render(<ThreadComposer onSend={vi.fn()} />);
 
