@@ -194,8 +194,11 @@ def test_runtime_payload_matches_shared_catalogue_contract():
 def test_disabling_memory_consolidation_preserves_other_memory_settings():
     config = Config()
     before = config.agents.defaults.model_dump()
-    assert update_runtime_config(config, {"agents.defaults.dream.enabled": False}, local_browser=True)
-    after = config.agents.defaults.model_dump()
+    update = update_runtime_config(config, {"agents.defaults.dream.enabled": False}, local_browser=True)
+    # 这条要重启才生效：不写进活对象，但必须落进要持久化的那份
+    assert update.restart_required == ("agents.defaults.dream",)
+    assert config.agents.defaults.dream.enabled is True, "重启才生效的键不能悄悄改进运行中的配置"
+    after = update.persisted.agents.defaults.model_dump()
     before["dream"]["enabled"] = False
     assert after == before
 

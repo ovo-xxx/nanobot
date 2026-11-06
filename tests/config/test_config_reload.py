@@ -143,6 +143,6 @@ def test_is_frozen_covers_registration_time_switches() -> None:
     assert is_frozen("agents.defaults.workspace")
     assert is_frozen("tools.exec.max_runtime")
     assert is_frozen("network.proxy")
-    assert not is_frozen("agents.defaults.dream.enabled")
+    assert is_frozen("agents.defaults.dream.enabled")
     assert not is_frozen("agents.defaults.session_ttl_minutes")
     assert not is_frozen("tools.cli_apps.run_timeout")
