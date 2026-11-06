@@ -991,6 +991,35 @@ def _run_claimed_gateway(
         except Exception as e:
             console.print(f"[yellow]Could not open browser ({e}); visit {display_url}[/yellow]")
 
+    def _hot_reload_config() -> None:
+        """Re-read config.json onto the live object, then refresh the model runtime.
+
+        Holders keep sub-model references (`AgentLoop.tools_config`, the channel config
+        instance inside `GatewayHTTPHandler`), so values are written in place instead of
+        swapping pointers. Frozen paths - sandbox policy, bound ports, channel wiring,
+        registration-time switches, workspace - are reported as needing a restart rather
+        than mutated under a running process, so one file write cannot quietly widen
+        the sandbox.
+        """
+        from nanobot.config.loader import load_config, resolve_config_env_vars
+        from nanobot.config.reload import apply_config_in_place
+
+        path = Path(config_path)
+        try:
+            fresh = resolve_config_env_vars(load_config(path), config_path=path)
+        except Exception as exc:
+            # A half-saved file must not take the running gateway down with it.
+            logger.warning("Config changed but did not parse; keeping the running values: {}", exc)
+            return
+        result = apply_config_in_place(config, fresh)
+        if result.applied:
+            logger.info("Config hot-reloaded: {}", ", ".join(result.applied))
+        if result.refused:
+            logger.warning("Config keys need a gateway restart (left unchanged): {}", ", ".join(result.refused))
+        if result.errors:
+            logger.warning("Config keys failed to apply (left unchanged): {}", ", ".join(result.errors))
+        agent.invalidate_runtime_config()
+
     async def run() -> None:
         startup_gate = ExitStack()
         desktop_activated = asyncio.Event()
@@ -1042,7 +1071,7 @@ def _run_claimed_gateway(
                 asyncio.create_task(
                     watch_config_file(
                         Path(config_path),
-                        lambda: agent.invalidate_runtime_config(),
+                        _hot_reload_config,
                     ),
                     name="nanobot-config-watcher",
                 ),
