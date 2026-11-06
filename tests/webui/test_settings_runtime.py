@@ -228,7 +228,9 @@ def test_idle_compaction_settings_roundtrip_and_restart_contract(tmp_path):
     for minutes in (0, 720, 721, 37, 15):
         payload = services.mutate(update_runtime_config_settings, {key: minutes})
         assert payload["runtime_config"][key] == minutes
-        assert payload["requires_restart"] is True
+        # 空闲压缩窗口现在能热生效：AutoCompact 从活配置读 ttl，不再需要重启
+        assert payload["requires_restart"] is False
+        assert key in payload["hot_reloaded_paths"]
         saved = load_config(path)
         assert saved.agents.defaults.session_ttl_minutes == minutes
         assert saved.agents.defaults.idle_compact_check_interval_seconds == 60
@@ -253,7 +255,8 @@ def test_idle_compaction_legacy_config_can_be_read_and_updated(tmp_path):
 
     payload = update_runtime_config_settings({key: 0}, config_path=path)
     assert payload["runtime_config"][key] == 0
-    assert payload["requires_restart"] is True
+    assert payload["requires_restart"] is False
+    assert key in payload["hot_reloaded_paths"]
     saved = load_config(path)
     assert saved.agents.defaults.session_ttl_minutes == 0
     assert saved.agents.defaults.idle_compact_check_interval_seconds == 91

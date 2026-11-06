@@ -22,18 +22,20 @@ def test_cheap_scalar_is_applied() -> None:
 def test_nested_identity_survives_so_sub_model_holders_are_not_left_behind() -> None:
     """`AgentLoop.tools_config` / `GatewayHTTPHandler.config` hold sub-objects, not the root."""
     live = _config()
-    exec_before = live.tools.exec
-    web_before = live.tools.web
+    tools_before = live.tools
+    cli_before = live.tools.cli_apps
+    defaults_before = live.agents.defaults
 
     apply_config_in_place(
         live,
-        _config(tools={"exec": {"max_runtime": 77}, "web": {"use_proxy": True}}),
+        _config(agents={"defaults": {"session_ttl_minutes": 33}}, tools={"cli_apps": {"run_timeout": 120}}),
     )
 
-    assert live.tools.exec is exec_before, "换指针会让持有子对象的消费者读到旧值"
-    assert live.tools.web is web_before
-    assert live.tools.exec.max_runtime == 77
-    assert live.tools.web.use_proxy is True
+    assert live.tools is tools_before, "换指针会让持有子对象的消费者读到旧值"
+    assert live.tools.cli_apps is cli_before
+    assert live.agents.defaults is defaults_before
+    assert live.agents.defaults.session_ttl_minutes == 33
+    assert live.tools.cli_apps.run_timeout == 120
 
 
 def test_security_and_startup_only_fields_are_refused_not_mutated() -> None:
@@ -139,5 +141,8 @@ def test_is_frozen_covers_registration_time_switches() -> None:
     assert is_frozen("tools.cli_apps.enable")
     assert is_frozen("channels.telegram.token")
     assert is_frozen("agents.defaults.workspace")
+    assert is_frozen("tools.exec.max_runtime")
+    assert is_frozen("network.proxy")
     assert not is_frozen("agents.defaults.dream.enabled")
-    assert not is_frozen("tools.web.use_proxy")
+    assert not is_frozen("agents.defaults.session_ttl_minutes")
+    assert not is_frozen("tools.cli_apps.run_timeout")

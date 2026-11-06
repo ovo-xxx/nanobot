@@ -50,6 +50,19 @@ FROZEN_PATHS: frozenset[str] = frozenset({
     "tools.exec.allow_patterns",
     "tools.exec.deny_patterns",
     "tools.exec.max_runtime_limit",
+    # 执行超时/空闲策略在构造期拷进工具（shell.py:174-176），改了要重启才生效
+    "tools.exec.max_runtime",
+    "tools.exec.idle_timeout",
+    "tools.exec.path_prepend",
+    "tools.exec.path_append",
+    # 出站路由：provider 侧会随快照重建，但 web 工具与通道在构造期就固化了 proxy，
+    # 半生效比不生效更糟 —— 统一按需要重启处理
+    "network.proxy",
+    # API server 的 host/port/timeout 都在启动时读取（cli/commands.py:361）
+    "api.timeout",
+    # web 工具的 proxy/user_agent 是 create() 时算好的（tools/web.py:408-411）
+    "tools.web.use_proxy",
+    "tools.web.user_agent",
 })
 
 #: Registration-time switches (`tools.exec.enable`, `tools.my.enable`, ...).
